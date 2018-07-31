@@ -48,23 +48,23 @@ randomPositionsChrom <- function(chrom, count){
 
 #count - samples per chromosome
 #variantsSetToExclude - set of variants to exclude from selection
-getRandomPositionsExcludeSubset <- function(count, variantsSetToExclude){ 
+getRandomPositionsExcludeSubset <- function(positionsCount, variantsSetToExclude){ 
   chromLengths <- fread(chromosomeLengthsPath)
   chroms <- lapply(chromLengths$CHROM, function(i){
     #print(paste0("chr",c(i)))
     # draw, check, draw again until success
     variantsSubset<-subset(variantsSetToExclude, CHROM==i)
-    tmpCount <- count
-    resRandom <- randomPositionsChrom(i,tmpCount)
+    tmpPositionsCount <- positionsCount
+    resRandom <- randomPositionsChrom(i,tmpPositionsCount)
     repeat{
       #print(paste0("tmpCount: ",c(tmpCount)))
-      # remove duplicates
+      # remove loci present in variantsSetToExclude
       resRandom <- resRandom[!variantsSubset, on=.(POS)]
-      tmpCount <- count - nrow(resRandom)
-      if(nrow(resRandom)==count){
+      tmpPositionsCount <- positionsCount - nrow(resRandom)
+      if(nrow(resRandom)==positionsCount){
         break
       }
-      resRandom <- rbind(resRandom,randomPositionsChrom(i,tmpCount))
+      resRandom <- rbind(resRandom,randomPositionsChrom(i,tmpPositionsCount))
     }
     return(resRandom)
   })
