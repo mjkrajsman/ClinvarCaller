@@ -1,7 +1,11 @@
 library(data.table)
 library(Rsamtools)
 library(tictoc)
+library(stringr)
+library(testthat)
 library(BSgenome.Hsapiens.UCSC.hg38)
+#library(BSgenome.Hsapiens.UCSC.hg19)
+source("./tests.R")
 
 gunzipPath <- function(string){
   if(str_sub(string,-3,-1)==".gz"){
@@ -208,6 +212,16 @@ loadClinvarData <- function(vcfPath=""){
   return(res)
 }
 
+loadVcfData <- function(vcfPath=""){
+  res <- fread(vcfPath, skip = "CHROM")
+  colnames(res)[colnames(res)=="#CHROM"] <- "CHROM"
+  res$CHROM <- gsub("chr", "", res$CHROM)
+  res <- res[!like(ALT,",")] # remove multiallelic sites
+  res <- subset(unique(res, by=c("CHROM","POS")))
+  res[CHROM == "MT" ,"CHROM":="M"]
+  return(res)
+}
+
 dts_disjoint <- function(dt1,dt2){
   if(nrow(fsetdiff(dt1,dt2)) == nrow(dt1)){
     print('true')
@@ -216,12 +230,14 @@ dts_disjoint <- function(dt1,dt2){
   }
 }
 
-inputVariantsDbPath<-gunzipPath("./input/clinvar_alleles.single.b38.tsv.gz")
+#inputVariantsDbPath<-gunzipPath("./input/clinvar_alleles.single.b38.tsv.gz")
+inputVariantsDbPath<-gunzipPath("./input/goldenStandard38.vcf.gz")
 bamPath="./input/corriell_S7-ready.bam"
 bamFile <- BamFile(bamPath)
 
 
-varDb <- loadClinvarData(inputVariantsDbPath) 
+#varDb <- loadClinvarData(inputVariantsDbPath) 
+varDb <- loadVcfData(inputVariantsDbPath) 
 
 bedPath <- gunzipPath("./input/corriell_S7-ready.per-base.bed.gz")
 coverage <- getCoverageFromBed(bedPath)
@@ -231,14 +247,16 @@ lociAll <- getUniqueLoci(varDb)
 
 subsetBounds <- data.table("lower"=c(1,2,6,11,21,51,101,201),
                            "upper"=c(1,5,10,20,50,100,200,9999),
-                           "TD"=c(25000,10,10,10,10,10,10,10))
-subsetBounds <- updateDepthsColumn(pileups, subsetBounds)
-#randomPositions <- getRandomPositionsFromCoverage(coverage,subsetBounds,randomSubsetSize=200000)
-randomPositions <- getRandomPositionsExcludeSubset2(coverage, variantsSetToExclude=lociAll, subsetBounds)
+                           "TD"=c(10,10,10,10,10,10,10,10))
+
 
 pileups <- pileupClinVar(lociAll, 25000)
 pileups <- unifyColNamesInPileups(pileups)
 pileups <- addNucColumnsToPileups(pileups)
+
+subsetBounds <- updateDepthsColumn(pileups, subsetBounds)
+randomPositions <- getRandomPositionsExcludeSubset2(coverage, variantsSetToExclude=lociAll, subsetBounds)
+
 pileupsRandom <- pileupClinVar(randomPositions, nrow(randomPositions))
 pileupsRandom <- unifyColNamesInPileups(pileupsRandom)
 pileupsRandom <- addNucColumnsToPileups(pileupsRandom)
@@ -252,6 +270,7 @@ histRand <- getSubsetDepths(pileupsRandom, subsetBounds)
 
 print(hist)
 print(histRand)
+subsetBounds[,"TD_rand":=histRand]
 
 #TP == lociAll, pileups: +, variant found
 #TP <- sum(pileups[,altDepth>0])

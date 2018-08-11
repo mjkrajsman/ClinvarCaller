@@ -3,11 +3,11 @@ library(Rsamtools)
 library(tictoc)
 library(stringr)
 library(testthat)
-#library(BSgenome.Hsapiens.UCSC.hg38)
+library(BSgenome.Hsapiens.UCSC.hg38)
 #library(BSgenome.Hsapiens.UCSC.hg19)
 source("./tests.R")
 
-clinvarCaller <- function(newPileups=TRUE,newFalsePileups=TRUE,runsAtImid=FALSE,hg38=TRUE,returnMergedDb=TRUE,calculateStats=TRUE,varDbFormat="tsv",chromosomeLengthsPath="./input/chromosomeLengths.csv",bamPath="./input/corriell_S7-ready.bam",inputVariantsDbPath="./input/clinvar_alleles.single.b38.tsv.gz",vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",vcfHcFcPath="./input/corriell_S7-HCScanFC.vcf.gz",outputPileupsPath="./output/pileups.csv",outputStatsPath="./output/stats.csv",outputVarDbMergedPath="./output/varDbMerged-reduced.csv",pileupsTmp,falsePileupsTmp,notVariantPositionsTmp){
+clinvarCaller <- function(newPileups=TRUE,newFalsePileups=TRUE,newNotVariantPositions=TRUE,runsAtImid=FALSE,hg38=TRUE,returnMergedDb=TRUE,returnStats=TRUE,returnPileups=TRUE,returnTmpPileups=TRUE,returnNotVariantPositions=TRUE,returnHistogramData=TRUE,verbose=TRUE,minBaseQuality=0,minMapq=0,varDbFormat="tsv",chromosomeLengthsPath="./input/chromosomeLengths.csv",bamPath="./input/corriell_S7-ready.bam",bedPath="./input/corriell_S7-ready.per-base.bed.gz",inputVariantsDbPath="./input/clinvar_alleles.single.b38.tsv.gz",vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",vcfHcFcPath="./input/corriell_S7-HCScanFC.vcf.gz",outputLociAllPath="./output/lociAll.positions",outputPileupsPath="./output/pileups.csv",outputFalsePileupsPath="./output/falsePileups.csv",outputStatsPath="./output/stats.csv",outputVarDbMergedPath="./output/varDbMerged-reduced.csv",pileupsTmp,falsePileupsTmp,notVariantPositionsTmp){
 
 if(hg38==TRUE){
 library(BSgenome.Hsapiens.UCSC.hg38)
@@ -175,7 +175,7 @@ filterChroms <- function(input){
 
 pileupPosition <- function(chrom,pos,pParam){
   ir <- IRanges(pos,width=1)
-  res <- data.table(pileup (bamFile, indexFile, scanBamParam=ScanBamParam(which=GRanges(paste0("chr",c(chrom)), ir)), pileupParam=pParam))
+  res <- data.table(pileup(bamFile, indexFile, scanBamParam=ScanBamParam(which=GRanges(paste0("chr",c(chrom)), ir)), pileupParam=pParam))
   return(res)
 }
 
@@ -183,12 +183,12 @@ pileupPosition <- function(chrom,pos,pParam){
 
 pileupClinVarPart <- function(loci,begin,end,pParam){
   ir <- IRanges(as.matrix(loci[begin:end,"POS"])[,1],width=1)
-  res <- data.table(pileup (bamFile, indexFile, scanBamParam=ScanBamParam(which=GRanges(paste0("chr",c(as.matrix(loci[begin:end,"CHROM"])[,1])), ir)), pileupParam=pParam))
+  res <- data.table(pileup(bamFile, indexFile, scanBamParam=ScanBamParam(which=GRanges(paste0("chr",c(as.matrix(loci[begin:end,"CHROM"])[,1])), ir)), pileupParam=pParam))
   return(res)
 }
 
 
-pileupClinVar <- function(loci, batchSize){
+pileupClinVar <- function(loci, batchSize, minBaseQuality=0, minMapq=0){
   if(batchSize>nrow(loci)) {
     print("batchSize must be less or equal to number of rows in loci")
     return(NULL)
@@ -197,7 +197,12 @@ pileupClinVar <- function(loci, batchSize){
   n <- floor(nrow(loci)/batchSize)
   lastPileupSize <- nrow(loci)-n*batchSize
   #pp <- PileupParam(include_insertions=T, distinguish_strand=F, max_depth=1) #ignore_query=T -> count N
-  pp <- PileupParam(include_insertions=T, include_deletions=T, distinguish_strand=F) #ignore_query=T -> count N
+  pp <- PileupParam(include_insertions=T, include_deletions=T, distinguish_strand=F,
+                    max_depth=9999, min_base_quality=minBaseQuality, min_mapq=minMapq, min_nucleotide_depth=1, min_minor_allele_depth=0) #ignore_query=T -> count N
+  #pp default:
+  #max_depth=250, min_base_quality=13, min_mapq=0, min_nucleotide_depth=1, min_minor_allele_depth=0, 
+  #distinguish_strands=TRUE, distinguish_nucleotides=TRUE, ignore_query_Ns=TRUE, 
+  #include_deletions=TRUE, include_insertions=FALSE, left_bins=NULL, query_bins=NULL, cycle_bins=NULL
   pileups <- lapply(1:n, function(i){
     #pileups <- mclapply(1:n, function(i){
     #print(as.numeric(c(i, (i-1)*batchSize+1, i*batchSize)))
@@ -226,7 +231,7 @@ unifyColNamesInPileups <- function(pileups=""){
   colnames(pileups)[colnames(pileups)=="seqnames"] <- "CHROM"
   colnames(pileups)[colnames(pileups)=="pos"] <- "POS"
   pileups$CHROM <- gsub("chr", "", pileups$CHROM)
-  pileups[, `:=`(which_label = NULL)]
+  if("which_label" %in% colnames(pileups)){pileups[, `:=`(which_label = NULL)]}
   return(pileups)
 }
 
@@ -284,26 +289,38 @@ addRefFromReferenceGenome <- function(pileups){
 calculateDepths <- function(variantsTable=""){
   
   # nucleotides matching REF
-  variantsTable[, `:=`(refDepth = integer(0))]
-  variantsTable[,c("refDepth")][is.na(variantsTable[,c("refDepth")])] <- 0
-  variantsTable[substr(REF,1,1) == "A" ,"refDepth":=refDepth+nucA]
-  variantsTable[substr(REF,1,1) == "C" ,"refDepth":=refDepth+nucC]
-  variantsTable[substr(REF,1,1) == "G" ,"refDepth":=refDepth+nucG]
-  variantsTable[substr(REF,1,1) == "T" ,"refDepth":=refDepth+nucT]
-  ## variantsTable[nchar(as.character(alt))<nchar(as.character(ref)) & nchar(as.character(alt))>1, "refDepth":=refDepth+nucIn]
-  ## variantsTable[nchar(as.character(alt))>nchar(as.character(ref)) & nchar(as.character(ref))>1, "refDepth":=refDepth+nucDel]
+  #if(!("RD" %in% colnames(variantsTable))){
+  #  variantsTable[, `:=`(RD = integer(0))]
+  #  }
+  if("RD" %in% colnames(variantsTable)){variantsTable[, `:=`(RD = NULL)]}
+  variantsTable[, `:=`(RD = integer(0))]
+  variantsTable[,c("RD")][is.na(variantsTable[,c("RD")])] <- 0
+  variantsTable[substr(REF,1,1) == "A" ,"RD":=RD+nucA]
+  variantsTable[substr(REF,1,1) == "C" ,"RD":=RD+nucC]
+  variantsTable[substr(REF,1,1) == "G" ,"RD":=RD+nucG]
+  variantsTable[substr(REF,1,1) == "T" ,"RD":=RD+nucT]
+  ## variantsTable[nchar(as.character(alt))<nchar(as.character(ref)) & nchar(as.character(alt))>1, "RD":=RD+nucIn]
+  ## variantsTable[nchar(as.character(alt))>nchar(as.character(ref)) & nchar(as.character(ref))>1, "RD":=RD+nucDel]
   
   # nucleotides matching ALT
-  variantsTable[, `:=`(altDepth = integer(0))]
-  variantsTable[,c("altDepth")][is.na(variantsTable[,c("altDepth")])] <- 0
-  variantsTable[ALT == "A" ,"altDepth":=altDepth+nucA]
-  variantsTable[ALT == "C" ,"altDepth":=altDepth+nucC]
-  variantsTable[ALT == "G" ,"altDepth":=altDepth+nucG]
-  variantsTable[ALT == "T" ,"altDepth":=altDepth+nucT]
-  #variantsTable[nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1),"altDepth":=altDepth+nucIn]
-  #variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT:="-","altDepth":=altDepth+nucDel]
+  #if(!("AD" %in% colnames(variantsTable))){
+  #  variantsTable[, `:=`(AD = integer(0))]
+  #  }
+  if("AD" %in% colnames(variantsTable)){variantsTable[, `:=`(AD = NULL)]}
+  variantsTable[, `:=`(AD = integer(0))]
+  variantsTable[,c("AD")][is.na(variantsTable[,c("AD")])] <- 0
+  variantsTable[ALT == "A" ,"AD":=AD+nucA]
+  variantsTable[ALT == "C" ,"AD":=AD+nucC]
+  variantsTable[ALT == "G" ,"AD":=AD+nucG]
+  variantsTable[ALT == "T" ,"AD":=AD+nucT]
+  #variantsTable[nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1),"AD":=AD+nucIn]
+  #variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT:="-","AD":=AD+nucDel]
   
   # nucleotides not matching REF or ALT
+  #if(!("nullDepth" %in% colnames(variantsTable))){
+  #  variantsTable[, `:=`(nullDepth = integer(0))]
+  #  }
+  if("nullDepth" %in% colnames(variantsTable)){variantsTable[, `:=`(nullDepth = NULL)]}
   variantsTable[, `:=`(nullDepth = integer(0))]
   variantsTable[,c("nullDepth")][is.na(variantsTable[,c("nullDepth")])] <- 0
   variantsTable[substr(REF,1,1) != "A" & ALT != "A" ,"nullDepth":=nullDepth+nucA]
@@ -314,11 +331,11 @@ calculateDepths <- function(variantsTable=""){
   #variantsTable[nchar(as.character(ALT))>=nchar(as.character(REF)),"nullDepth":=nullDepth+nucDel]
   
   # coverage depth
-  variantsTable[,"totalDepth":=nucA+nucC+nucG+nucT]
-  #variantsTable[,"depthCtrl":=altDepth+refDepth+nullDepth]
+  variantsTable[,"DP":=nucA+nucC+nucG+nucT]
+  #variantsTable[,"depthCtrl":=AD+RD+nullDepth]
   
   # error flag
-  #variantsTable[totalDepth!=depthCtrl, "errFlag":=1]
+  #variantsTable[DP!=depthCtrl, "errFlag":=1]
   variantsTable[nchar(as.character(REF))>1 & nchar(as.character(ALT))>1, "errFlag":=1]
   variantsTable[,c("errFlag")][is.na(variantsTable[,c("errFlag")])] <- 0 
   
@@ -340,17 +357,221 @@ dts_disjoint <- function(dt1,dt2){
 }
 #================================================================== tests ^ ==================================================================
 
+
+#================================================================== randomPositions, histogram v ==================================================================
+getCoverageFromBed <- function(bedPath="./input/corriell_S7-ready.per-base.bed.gz"){
+  coverage <- fread(bedPath)
+  colnames(coverage) <- c("CHROM","start","stop","readsCount")
+  coverage <- subset(coverage, readsCount > 0)
+  coverage$CHROM <- gsub("chr", "", coverage$CHROM)
+  coverage <- filterChroms(coverage)
+  coverage[,"start":=start+1L]
+  #coverage[,"length":=stop-start]
+  return(coverage)
+}
+
+getCoverageSubsetByReadsCount <- function(coverage, min=1, max=1){
+  if(min<=max){
+    return(subset(coverage, (readsCount >= min & readsCount <= max)))
+  }else{
+    print("max must be greater or equal to min!")
+    return(NULL)
+  }  
+}
+
+
+
+getPositionsFromCoverageSubset <- function(coverageSubset,subsetMaxLength=200000){
+  if(nrow(coverageSubset)>subsetMaxLength){coverageSubset <- coverageSubset[sample(.N, subsetMaxLength, replace=F)]}
+  #tic()
+  #res2 <- rbindlist(lapply(1:nrow(f), function(i){data.table("CHROM"=f[i,CHROM],"POS"=f[i,start]:f[i,stop],"readsCount"=f[i,readsCount])}))
+  #toc()
+  
+  #tic()
+  res <- rbindlist(
+      lapply(c(1:22, "X", "Y", "M"), function(i){
+      chromSubset <- subset(coverageSubset, CHROM==i)
+      #print(paste0("chr",i))
+      if(nrow(chromSubset)){
+        chromPositions <- rbindlist(
+          lapply(min(chromSubset[,readsCount]):max(chromSubset[,readsCount]), function(j){
+          countSubset <- subset(chromSubset, readsCount==j)
+          #print(paste0("readsCount",j))
+          if(nrow(countSubset)){
+            countPositions <- rbindlist(
+              lapply(1:nrow(countSubset), function(k){
+              data.table("POS"=countSubset[k,start]:countSubset[k,stop])
+              }))
+            countPositions[,"readsCount":=j]
+            return(countPositions)
+          }  
+        }))
+        chromPositions[,"CHROM":=i] 
+        return(chromPositions)
+      }
+    }))
+  #toc()  
+  #setequal(res[order("CHROM","POS","readsCount")],res2[order("CHROM","POS","readsCount")])
+  return(res)
+}
+
+getRandomPositions <- function(listOfPositions, randomSubsetSize=10000){
+  #print(randomSubsetSize)
+  #print(nrow(listOfPositions))
+  if(nrow(listOfPositions)>=randomSubsetSize){
+    res <- listOfPositions[sample(.N, randomSubsetSize, replace=F)]
+  }else{
+    res <- listOfPositions  
+  }
+  return(res)
+}
+
+getRandomPositionsFromCoverage <- function(coverage,subsetBounds,subsetMaxLength=200000){
+  res <- lapply(1:nrow(subsetBounds), function(i){
+    coverageSubset <- getCoverageSubsetByReadsCount(coverage,min=subsetBounds[i,lower],max=subsetBounds[i,upper])
+    listOfPositions <- getPositionsFromCoverageSubset(coverageSubset,subsetMaxLength)
+    randomPositions <- getRandomPositions(listOfPositions, subsetBounds[i,DP])
+    return(randomPositions)
+  })
+  res <- rbindlist(res)
+  return(res)
+}
+#res -> nrow(subsetBounds) * randomSubsetSize
+
+#getPositionsFromCoverage <- function(coverage,subsetBounds,subsetMaxLength=200000){
+#  res <- lapply(1:nrow(subsetBounds), function(i){
+#    coverageSubset <- getCoverageSubsetByReadsCount(coverage,min=subsetBounds[i,lower],max=subsetBounds[i,upper])
+#    listOfPositions <- getPositionsFromCoverageSubset(coverageSubset,subsetMaxLength)
+#    return(listOfPositions)
+#  })
+#  return(res)
+#}
+
+getVRF <- function(pileupsWithNucAndRefCols, getDP = TRUE, getRD = TRUE){
+  res <- copy(pileupsWithNucAndRefCols)
+  res[,"DP":=nucA+nucC+nucG+nucT+nucIn+nucDel]
+  
+  if("RD" %in% colnames(res)){res[, `:=`(RD = NULL)]}
+  res[, `:=`(RD = integer(0))]
+  res[,c("RD")][is.na(res[,c("RD")])] <- 0
+  res[substr(REF,1,1) == "A" ,"RD":=RD+nucA]
+  res[substr(REF,1,1) == "C" ,"RD":=RD+nucC]
+  res[substr(REF,1,1) == "G" ,"RD":=RD+nucG]
+  res[substr(REF,1,1) == "T" ,"RD":=RD+nucT]
+  
+  res["DP"!=0,"VRF":=(RD/DP)]
+  res["DP"==0,"VRF":=0]
+  if(getRD==FALSE){res[, `:=`(RD = NULL)]}
+  if(getDP==FALSE){res[, `:=`(DP = NULL)]}
+  return(res)
+}
+
+getDP <- function(pileupsWithNucCols, removeNucColumns=FALSE){
+  res <- copy(pileupsWithNucCols)
+  res[,"DP":=nucA+nucC+nucG+nucT+nucIn+nucDel]
+  if(removeNucColumns==TRUE){
+    res[, `:=`(nucA = NULL, nucC = NULL, nucG = NULL, nucT = NULL, nucIn = NULL, nucDel = NULL)]
+  }
+  return(res)
+}
+
+getSubsetDepths <- function(pileupsWithNucCols, subsetBounds){
+  res <- subsetBounds
+  totalDepths <- getDP(pileupsWithNucCols, removeNucColumns=TRUE)
+  res <- sapply(1:nrow(subsetBounds), function(i){
+    return(nrow(subset(totalDepths, (DP >= subsetBounds[i,lower] & DP <= subsetBounds[i,upper]))))
+  })
+  return(res)
+}
+  
+updateDepthsColumn <- function(pileupsWithNucCols, subsetBounds){
+  res <- subsetBounds
+  subsetDepths <- getSubsetDepths(pileupsWithNucCols, subsetBounds)
+  res[,"DP":=subsetDepths]
+  return(res)
+}
+
+#count - samples per chromosome
+#variantsSetToExclude - set of variants to exclude from selection
+getRandomPositionsExcludeSubset2 <- function(coverage,variantsSetToExclude,subsetBounds){ 
+  posCount <- sum(subsetBounds[,"DP"])
+  #print(posCount)
+  #===draw, check, draw again until success===
+  #calculate initial randomSubsetSize
+  randomSubsetSize <- ceiling(posCount/nrow(subsetBounds))
+  subsetMaxLength <- randomSubsetSize
+  #print(paste0(randomSubsetSize,", ",subsetMaxLength))
+  #set initial tmpCount == count
+  tmpPosCount <- posCount
+  #get first set of random positions
+  res <- getRandomPositionsFromCoverage(coverage,subsetBounds,subsetMaxLength) #res -> nrow(subsetBounds) * randomSubsetSize
+  repeat{
+    #remove duplicates
+    res <- subset(unique(res, by=c("CHROM","POS")))
+    # remove loci present in variantsSetToExclude
+    #print("=======================================================================================================")
+    #dts_disjoint(res[,c("CHROM","POS")], variantsSetToExclude[,c("CHROM","POS")])
+    res <- res[!variantsSetToExclude, on=.(CHROM,POS)]
+    #dts_disjoint(res[,c("CHROM","POS")], variantsSetToExclude[,c("CHROM","POS")])
+    #end if number of drawn loci is equal or greater than count
+    if(nrow(res)>=posCount){
+      break
+    }
+    #update tmpCount
+    tmpPosCount <- posCount - nrow(res)
+    #print(tmpPosCount)
+    #update randomSubsetSize
+    randomSubsetSize <- ceiling(tmpPosCount/nrow(subsetBounds))
+    subsetMaxLength <- randomSubsetSize*3
+    #draw next set of random positions
+    res <- rbind(res,getRandomPositionsFromCoverage(coverage,subsetBounds,subsetMaxLength))
+  }
+  #ensure that the resulting loci set will not be larger than specified in count
+  res <- res[sample(.N, posCount, replace=F),c("CHROM","POS","readsCount")]
+  return(res)
+}
+
+#================================================================== randomPositions, histogram ^ ==================================================================
+
+
+
+
+
+
+
+
+
+
+
+
 test_that("Does BAM file exist?", {
   expect_that(file.exists(bamPath), is_true())
 })
 
 bamFile <- BamFile(bamPath)
+if(verbose==TRUE){print("BAM file loaded.")}
 if(exists(paste0(bamPath, ".bai"))){
 indexFile <- paste0(bamPath, ".bai")
+  if(verbose==TRUE){print("Index (BAI) file loaded.")}
 }else{
 indexFile <- indexBam(bamFile)
+if(verbose==TRUE){print("Index (BAI) file created and loaded.")}
 }
+
 seqinfo(bamFile)
+
+test_that("Does BED file exist?", {
+  expect_that(file.exists(bedPath), is_true())
+})
+bedPath <- gunzipPath(bedPath)
+coverage <- getCoverageFromBed(bedPath)
+if(verbose==TRUE){print("BED file loaded.")}
+
+histogramData <- data.table("lower"=c(1,2,6,11,21,51,101,201),
+                           "upper"=c(1,5,10,20,50,100,200,9999),
+                           "DP"=c(1,1,1,1,1,1,1,1),
+                           "DP_rand"=c(1,1,1,1,1,1,1,1))
+
 
 #================================================================== varDB: Choose one v ==================================================================
 
@@ -358,9 +579,11 @@ inputVariantsDbPath <- gunzipPath(inputVariantsDbPath)
 
 if(varDbFormat=="vcf"){
 	varDb <- loadVcfData(inputVariantsDbPath)
+	if(verbose==TRUE){print("varDb VCF data loaded.")}
 }
 if(varDbFormat=="tsv"){
 	varDb <- loadClinvarData(inputVariantsDbPath) 
+	if(verbose==TRUE){print("varDb TSV data loaded.")}
 }
 if(varDbFormat!="tsv" & varDbFormat!="vcf"){print("varDb file must be in tsv (clinvar) or vcf format!")}
 
@@ -374,6 +597,7 @@ test_that("Are CHROM,POS,REF,ALT present in varDb colnames?", {
 })
 
 varDb <- normalizeDeletions(varDb)
+if(verbose==TRUE){print("Deletions normalized.")}
 
 #varDb <- setTenthColumnNameInVcfToGenotype(vcfTable = varDb)
 #test_that("varDb 10th colname", {
@@ -392,118 +616,176 @@ varDb <- varDb [which(varDb$pathogenic > 0 | varDb$likely_pathogenic > 0),]
 #inLoci <- getUniqueLoci(varDb, variationType="in", saveNucleotideData=TRUE)
 #delLoci <- getUniqueLoci(varDb, variationType="del", saveNucleotideData=TRUE)
 #notMatchingLoci <- getUniqueLoci(varDb, variationType="notMatching", saveNucleotideData=TRUE)
-lociUniqueAll <- getUniqueLoci(varDb)
+lociAll <- getUniqueLoci(varDb)
+lociAll2 <- copy(lociAll)
+lociAll2[,"CHROM":=paste0("chr",CHROM)]
+fwrite(lociAll2, outputLociAllPath, sep= " ")
+rm(lociAll2)
+if(verbose==TRUE){print("lociAll exported to external file.")}
 
 #================================================================== Test sets v ==================================================================
 
-
-# GATK HAPLOTYPECALLER - general scan
-test_that("Does vcfHcGeneral file exist?", {
-  expect_that(file.exists(vcfHcGeneralPath), is_true())
-})
-
-vcfHcGeneralPath <- gunzipPath(vcfHcGeneralPath)
-
-vcfHcGeneral <- loadVcfData(vcfHcGeneralPath)
-vcfHcGeneral <- filterChroms(vcfHcGeneral)
-
-test_that("Are only valid chromosomes (1:22, X, Y, M) present in vcfHcGeneral?", {
- expect_that(unique(unique(vcfHcGeneral$CHROM) %in% c(1:22, "X", "Y", "M")), is_true())
-})
-
-
-# GATK HAPLOTYPECALLER - forcecalling
-test_that("Does vcfHcFc file exist?", {
-  expect_that(file.exists(vcfHcFcPath), is_true())
-})
-
-vcfHcFcPath <- gunzipPath(vcfHcFcPath)
-
-vcfHcFc <- loadVcfData(vcfHcFcPath)
-vcfHcFc <- setTenthColumnNameInVcfToGenotype(vcfHcFc)
-vcfHcFc01 <- vcfHcFc[like(GENOTYPE,"0/1")]
-vcfHcFc11 <- vcfHcFc[like(GENOTYPE,"1/1")]
-vcfHcFc <- rbind(vcfHcFc01, vcfHcFc11)
-rm(vcfHcFc01, vcfHcFc11)
-
-test_that("Are only 0/1 and 1/1 present in GENOTYPE?", {
-  expect_that(unique(substr(vcfHcFc$GENOTYPE,1,3)), equals(c("0/1","1/1")))
-})
-
+if(returnStats==TRUE){
+  # GATK HAPLOTYPECALLER - general scan
+  test_that("Does vcfHcGeneral file exist?", {
+    expect_that(file.exists(vcfHcGeneralPath), is_true())
+  })
+  
+  vcfHcGeneralPath <- gunzipPath(vcfHcGeneralPath)
+  
+  vcfHcGeneral <- loadVcfData(vcfHcGeneralPath)
+  if(verbose==TRUE){print("vcfHcGeneral file loaded.")}
+  vcfHcGeneral <- filterChroms(vcfHcGeneral)
+  
+  test_that("Are only valid chromosomes (1:22, X, Y, M) present in vcfHcGeneral?", {
+   expect_that(unique(unique(vcfHcGeneral$CHROM) %in% c(1:22, "X", "Y", "M")), is_true())
+  })
+  
+  
+  # GATK HAPLOTYPECALLER - forcecalling
+  test_that("Does vcfHcFc file exist?", {
+    expect_that(file.exists(vcfHcFcPath), is_true())
+  })
+  
+  vcfHcFcPath <- gunzipPath(vcfHcFcPath)
+  
+  vcfHcFc <- loadVcfData(vcfHcFcPath)
+  if(verbose==TRUE){print("vcfHcFc file loaded.")}
+  vcfHcFc <- setTenthColumnNameInVcfToGenotype(vcfHcFc)
+  vcfHcFc01 <- vcfHcFc[like(GENOTYPE,"0/1")]
+  vcfHcFc11 <- vcfHcFc[like(GENOTYPE,"1/1")]
+  vcfHcFc <- rbind(vcfHcFc01, vcfHcFc11)
+  rm(vcfHcFc01, vcfHcFc11)
+  
+  test_that("Are only 0/1 and 1/1 present in GENOTYPE?", {
+    expect_that(unique(substr(vcfHcFc$GENOTYPE,1,3)), equals(c("0/1","1/1")))
+  })
+}
 
 #================================================================== Test sets ^ ==================================================================
 
 
 if(newPileups==TRUE){
   # ================================ A (new pileups) ================================
-  pileups <- pileupClinVar(lociUniqueAll, 25000)
+  pileups <- pileupClinVar(lociAll, 25000, minBaseQuality, minMapq)
+  if(verbose==TRUE){print("Pileups done.")}
   pileupsTmp <- pileups
 }else{
   # ================================ B (no new pileups) ================================
   if(exists("pileupsTmp")){
     pileups <- pileupsTmp
+	if(verbose==TRUE){print("Pileup restored from pileupsTmp.")}
   }else{
     stop("pileupsTmp is not present! Please provide a valid pileupsTmp or set newPileups=TRUE")
   }
 }  
 # ================================ pileups calculations
 pileups <- unifyColNamesInPileups(pileups)
+if(verbose==TRUE){print("pileups columns unified.")}
 pileups <- addNucColumnsToPileups(pileups)
+if(verbose==TRUE){print("Nuc columns added to pileups.")}
 
-pileupsTests(pileups)
+
+#pileupsTests(pileups)
 
 #View(pileups)
 varDb.merged <- mergePileupsWithVarDb(pileups, varDb, TRUE, TRUE)
+if(verbose==TRUE){print("Pileup merged with varDb.")}
 #varDb.merged <- varDb.merged[, c("CHROM","POS","REF","ALT","nucA","nucC","nucG","nucT","nucIn","nucDel")]
 
-#varDb.merged[, `:=`(refDepth = NULL, altDepth = NULL, nullDepth = NULL, totalDepth = NULL, depthCtrl = NULL, errFlag = NULL)]
+#varDb.merged[, `:=`(RD = NULL, AD = NULL, nullDepth = NULL, DP = NULL, depthCtrl = NULL, errFlag = NULL)]
 
 fwrite(pileups, outputPileupsPath)
+if(verbose==TRUE){print("pileups exported to external file.")}
 
 varDb.merged <- calculateDepths(varDb.merged)
 #varDb.merged.f <- calculateDepths(varDb.merged.f)
-View(varDb.merged)
+if(verbose==TRUE){print("Depths calculated.")}
+#View(varDb.merged)
 
 
-if(calculateStats==TRUE){
-  if(newFalsePileups==TRUE){
-    test_that("Does chromosomeLengths file exist?", {
-      expect_that(file.exists(chromosomeLengthsPath), is_true())
-    })
-    # ================================ A (new falsePileups) ================================
-    if(nrow(lociUniqueAll)>1000000){
-      notVariantPositions <- (getRandomPositionsExcludeSubset(150000,lociUniqueAll)) #149149 * 24 -> 3,6m
-    }else{
-      notVariantPositions <- (getRandomPositionsExcludeSubset(12500,lociUniqueAll)) #12500 * 24 -> 300k
-    }
-    test_that('Are notVariantPositions and lociUniqueAll disjoint?', {
-      expect_that(dts_disjoint(notVariantPositions[,c("CHROM","POS")],lociUniqueAll[,c("CHROM","POS")]), prints_text('true'))
-    })
-    
-    notVariantPositionsTmp <- notVariantPositions
-    falsePileups <- pileupClinVar(notVariantPositions, 25000) # loci w/o variants - FPR
-    falsePileupsTmp <- falsePileups
+histogramData <- updateDepthsColumn(pileups, histogramData)
+if(verbose==TRUE){print("histogramData DP updated.")}
+
+
+if(newNotVariantPositions==TRUE){
+  notVariantPositions <- getRandomPositionsExcludeSubset2(coverage, variantsSetToExclude=lociAll, histogramData)
+  if(verbose==TRUE){print("Random positions generated.")}
+  
+  test_that('Are notVariantPositions and lociAll disjoint?', {
+    expect_that(dts_disjoint(notVariantPositions[,c("CHROM","POS")],lociAll[,c("CHROM","POS")]), prints_text('true'))
+  })
+  
+  notVariantPositionsTmp <- notVariantPositions
+  #falsePileups <- pileupClinVar(notVariantPositions, 25000) # loci w/o variants - FPR
+}else{
+  if(exists("notVariantPositionsTmp")){
+    notVariantPositions <- notVariantPositionsTmp
+    if(verbose==TRUE){print("notVariantPositions restored from notVariantPositionsTmp.")}
   }else{
-    # ================================ B (no new falsePileups) ================================
-    if(exists("falsePileupsTmp") & exists("notVariantPositionsTmp")){
-      notVariantPositions <- notVariantPositionsTmp
-      falsePileups <- falsePileupsTmp
-    }else{
-      stop("falsePileupsTmp and/or notVariantPositionsTmp are not present! Please provide a valid falsePileupsTmp and notVariantPositionsTmp or set newFalsePileups=TRUE")
-    }
-  
+    stop("notVariantPositionsTmp are not present! Please provide a valid notVariantPositionsTmp or set newNotVariantPositions=TRUE")
   }
-  
-  # ================================ falsePileups calculations
-  falsePileups <- unifyColNamesInPileups(falsePileups)
-  falsePileups <- addRefFromReferenceGenome(falsePileups)
 }
 
+if(newFalsePileups==TRUE){
+  # test_that("Does chromosomeLengths file exist?", {
+    # expect_that(file.exists(chromosomeLengthsPath), is_true())
+  # })
+  # # ================================ A (new falsePileups) ================================
+  # if(nrow(lociAll)>1000000){
+    # notVariantPositions <- (getRandomPositionsExcludeSubset(150000,lociAll)) #149149 * 24 -> 3,6m
+  # }else{
+    # notVariantPositions <- (getRandomPositionsExcludeSubset(12500,lociAll)) #12500 * 24 -> 300k
+  # }
+  if(nrow(notVariantPositions)>25000){
+    falsePileups <- pileupClinVar(notVariantPositions, 25000, minBaseQuality, minMapq)
+	if(verbose==TRUE){print("falsePileups done.")}
+  }else{
+    falsePileups <- pileupClinVar(notVariantPositions, nrow(notVariantPositions), minBaseQuality, minMapq)
+	if(verbose==TRUE){print("falsePileups done.")}
+  }
+  
+  
+  falsePileupsTmp <- falsePileups
+}else{
+  # ================================ B (no new falsePileups) ================================
+  if(exists("falsePileupsTmp")){
+    falsePileups <- falsePileupsTmp
+		if(verbose==TRUE){print("falsePileup restored from falsePileupsTmp.")}
+  }else{
+    stop("falsePileupsTmp are not present! Please provide a valid falsePileupsTmp or set newFalsePileups=TRUE")
+  }
 
+}
+
+# ================================ falsePileups calculations ================================ 
+falsePileups <- unifyColNamesInPileups(falsePileups)
+if(verbose==TRUE){print("falsePileups columns unified.")}
+falsePileups <- addRefFromReferenceGenome(falsePileups)
+if(verbose==TRUE){print("REF added to falsePileups.")}
+falsePileups <- addNucColumnsToPileups(falsePileups)
+if(verbose==TRUE){print("Nuc columns added to falsePileups.")}
+
+
+fwrite(falsePileups, outputFalsePileupsPath)
+if(verbose==TRUE){print("falsePileups exported to external file.")}
+
+
+# ================================ histogram ================================ 
+if(returnHistogramData==TRUE){
+  histogramP <- getSubsetDepths(pileups, histogramData)
+  histogramN <- getSubsetDepths(falsePileups, histogramData)
+  if(verbose==TRUE){print("Histogram data ready.")}
+  
+  print(histogramP)
+  print(histogramN)
+  histogramData[,"DP_rand":=histogramN]
+  if(verbose==TRUE){print("histogramData DP_rand updated.")}
+}
 
 # if(runsAtImid==TRUE){
 	# #bamPath <- "/ibm-storage/NGS/analysis/Roche_RASGENODERM_V1/miseq reporter/44028_S1.bam"
-	# getResFinal <- function(dd, varDb, lociUniqueAll){
+	# getResFinal <- function(dd, varDb, lociAll){
 	# res <- mclapply((1:length(dd)), function(i){ 
 	  # bamPath <- dd[i]
 	 
@@ -515,7 +797,7 @@ if(calculateStats==TRUE){
 	  
 	  # pp <- PileupParam(include_insertions=T, distinguish_strand=F) #ignore_query=T -> count N
 
-	  # pileups <- pileupClinVar(lociUniqueAll, 25000)
+	  # pileups <- pileupClinVar(lociAll, 25000)
 	  # pileups <- unifyColNamesInPileups(pileups)
 	  # pileups <- addNucColumnsToPileups(pileups)
 	  # varDb.merged <- mergePileupsWithVarDb(pileups, varDb, TRUE, TRUE)
@@ -540,9 +822,9 @@ if(calculateStats==TRUE){
 
 	# varDb$key <- paste0(varDb$CHROM, ":" , varDb$POS, "_", varDb$REF, ">", varDb$ALT)
 	# vcfHcGeneral$key <- paste0(vcfHcGeneral$CHROM, ":" , vcfHcGeneral$POS, "_", vcfHcGeneral$REF, ">", vcfHcGeneral$ALT)
-	# lociUniqueAll <- getUniqueLoci(varDb)
+	# lociAll <- getUniqueLoci(varDb)
 
-	# pgCC <- getResFinal (bamPath, varDb,lociUniqueAll)
+	# pgCC <- getResFinal (bamPath, varDb,lociAll)
 
 	# resFinal1 <- getResFinal(dd1)
 
@@ -567,7 +849,7 @@ if(calculateStats==TRUE){
 	# fwrite(resFinal1, paste0(c(outputPath),"rasgenoderm_v2_pathogenic.csv"))
 
 	# rr <- rbindlist(list(resFinal, resFinal1, resFinal2))
-	# sel <- rr [which(   rr$altDepth > 0  & ((nchar(rr$REF) ==1)  | (rr$nucDel > 0))),]
+	# sel <- rr [which(   rr$AD > 0  & ((nchar(rr$REF) ==1)  | (rr$nucDel > 0))),]
 					
 	# #sel [ grep("icht", tolower(sel$all_traits) ) ,]
 	# #ids <- c("44028", "45688", "47986" , "48747",  "50939" , "51030",  "51649")
@@ -584,10 +866,10 @@ if(calculateStats==TRUE){
 
 
 #====================================================================== TPR v ======================================================================
-if(calculateStats==TRUE){
+if(returnStats==TRUE){
   FNPlusTP <- nrow(varDb.merged) # P = TP + FN, total number of positives
-  ccTP <- sum(varDb.merged[,altDepth>0]) # pileups on P set only; altDepth > 0 -> variant found # altDepth == 0 -> no variant
-  ccFN <- sum(varDb.merged[,altDepth==0])
+  ccTP <- sum(varDb.merged[,AD>0]) # pileups on P set only; AD > 0 -> variant found # AD == 0 -> no variant
+  ccFN <- sum(varDb.merged[,AD==0])
   hcGeneralTP <- nrow(vcfHcGeneral[CHROM %in% varDb$CHROM & POS %in% varDb$POS])
   
   hcFcTP <- nrow(vcfHcFc[CHROM %in% varDb$CHROM & POS %in% varDb$POS]) # pileups on P set only, could be nrow(vcfHcFc)
@@ -600,17 +882,21 @@ if(calculateStats==TRUE){
   #====================================================================== TPR ^ ======================================================================
   #====================================================================== FPR v ======================================================================
   FPPlusTN <- nrow(falsePileups) # N = FP + TN, total number of negatives
-  ccFP <- sum(falsePileups[,nucleotide!=REF])
-  ccTN <- sum(falsePileups[,nucleotide==REF])
+  
+  #ccFP <- sum(falsePileups[,nucleotide!=REF])
+  ccFP <- 0
+  #ccTN <- sum(falsePileups[,nucleotide==REF])
+  ccTN <- 0
   
   # ===== FPR ===== # miss rate: FPR = FP/(FP+TN)
-  ccFPR <- ccFP/FPPlusTN # ClinvarCaller, forcecalling
+  #ccFPR <- ccFP/FPPlusTN # ClinvarCaller, forcecalling
+  ccFPR <- 0
 
 #====================================================================== FPR ^ ======================================================================
 #====================================================================== CC + HC sum v ======================================================================
 
 
-  variantsCcPos<-subset(varDb.merged, altDepth>0)
+  variantsCcPos<-subset(varDb.merged, AD>0)
   variantsCcPos<-variantsCcPos[,c("CHROM","POS","REF","ALT")]
   variantsHcPos<-vcfHcFc[,c("CHROM","POS","REF","ALT")]
   ccHcOR<-rbind(variantsCcPos,variantsHcPos)
@@ -639,16 +925,25 @@ if(calculateStats==TRUE){
                 variantsCcOnlySnpCount=variantsCcOnlySnpCount)
   
   fwrite(stats, outputStatsPath)
+  if(verbose==TRUE){print("Stats ready.")}
 }
 
-fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","nucA","nucC","nucG","nucT","nucIn","nucDel","refDepth","altDepth","nullDepth","totalDepth","errFlag")], outputVarDbMergedPath)
-
+fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","nucA","nucC","nucG","nucT","nucIn","nucDel","RD","AD","nullDepth","DP","errFlag")], outputVarDbMergedPath)
+if(verbose==TRUE){print("varDb.merged exported to external file.")}
 
 
 #return(list(pileupsTmp=pileupsTmp, falsePileupsTmp=falsePileupsTmp, notVariantPositionsTmp=notVariantPositionsTmp))
 
-if(calculateStats==TRUE & returnMergedDb==FALSE){return(list(stats=stats, pileupsTmp=pileupsTmp, falsePileupsTmp=falsePileupsTmp, notVariantPositionsTmp=notVariantPositionsTmp))}
-if(calculateStats==TRUE & returnMergedDb==TRUE){return(list(varDb.merged=varDb.merged, stats=stats, pileupsTmp=pileupsTmp, falsePileupsTmp=falsePileupsTmp, notVariantPositionsTmp=notVariantPositionsTmp))}
 
-return(list(varDb.merged=varDb.merged))
+
+
+res <- list()
+if(returnPileups==TRUE){res <- append(res,list(pileups=pileups, falsePileups=falsePileups))}
+if(returnTmpPileups==TRUE){res <- append(res,list(pileupsTmp=pileupsTmp, falsePileupsTmp=falsePileupsTmp))}
+if(returnNotVariantPositions==TRUE){res <- append(res, list(notVariantPositions=notVariantPositions))}
+if(returnStats==TRUE){res <- append(res,list(stats=stats))}
+if(returnMergedDb==TRUE){res <- append(res,list(varDb.merged=varDb.merged))}
+if(returnHistogramData==TRUE){res <- append(res,list(histogramData=histogramData))}
+  
+return(res)
 }
