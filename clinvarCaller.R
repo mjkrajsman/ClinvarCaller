@@ -5,27 +5,21 @@ library(stringr)
 library(tools)
 library(BSgenome.Hsapiens.UCSC.hg38)
 #library(BSgenome.Hsapiens.UCSC.hg19)
-#library(class) - #TODO: delete if only for knn
 library(ggplot2)
 library(caret)
-#library(plotROC)
-#source("./tests.R")
 
 #TODO: optimize new(...)=TRUE/FALSE usage
 #TODO: optional: multi-threading?
 clinvarCaller <- function(newCoverage=TRUE,newPileups=TRUE,newFalsePileups=TRUE,newPostitionsAll=FALSE,
-                          newPositionsAllFalse=TRUE,newPileupsWithStats=TRUE,newFalsePileupsWithStats=TRUE,
-                          newVcfHcGeneral=FALSE, newVcfHcFc=FALSE,hg38=TRUE,
-                          returnMergedDb=FALSE,returnStats=TRUE,returnPileups=TRUE,returnPositionsAll=TRUE,returnPositionsAllFalse=TRUE,
+                          newPositionsAllFalse=TRUE,newPileupsWithStats=TRUE,newFalsePileupsWithStats=TRUE,hg38=TRUE,
+                          returnMergedDb=FALSE,returnPileups=TRUE,returnPositionsAll=TRUE,returnPositionsAllFalse=TRUE,
                           returnSubsetDpDataTable=TRUE,verbose=TRUE,minBaseQuality=0,minMapq=0,fullPileupStats=TRUE,
-                          train=FALSE,HCTest=TRUE,phredOffset=33,
+                          fullMergedDb=TRUE,train=FALSE,phredOffset=33,
 						              lowerSubsetBounds = c(1,2,6,11,21,51,101,201), 
 						              upperSubsetBounds = c(1,5,10,20,50,100,200,9999),
                           chromosomeLengthsPath="./input/chromosomeLengths.csv",
                           bamPath="./input/corriell_S7-ready.bam",
                           inputVariantsDbPath="./input/clinvar_alleles.single.b38.tsv.gz",
-                          vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
-                          vcfHcFcPath="./input/corriell_S7-HCScanFC.vcf.gz",
                           modelPath="./input/model.rds",
                           listOfTrainArguments=list(method="lda",
                                                        preProc=c("center","zv","scale"),
@@ -34,7 +28,7 @@ clinvarCaller <- function(newCoverage=TRUE,newPileups=TRUE,newFalsePileups=TRUE,
                                                        formula=as.formula(c("VAR~", paste(names(dataSubset[,!c("CHROM","POS","NUC","BQ","MQ","PR","VAR","REF")]), 
                                                                                           collapse = "+")))     
                           ),
-						              plotFolderPath="./output/plots/", plotTitle="Classifier_evaluation",
+						              plotFolderPath="./output/plots/", plotTitle="Classifier evaluation",
                           outputCoveragePath="./output/corriell_S7-ready",
                           outputPositionsAllPath="./output/positionsAll.positions",
                           outputPositionsAllFalsePath="./output/positionsAllFalse.positions",
@@ -42,7 +36,6 @@ clinvarCaller <- function(newCoverage=TRUE,newPileups=TRUE,newFalsePileups=TRUE,
                           outputPileupsFalsePath="./output/pileupsFalse.mpileup",
                           outputPileupsWithStatsPath="./output/pileupsWithStats.csv",
                           outputFalsePileupsWithStatsPath="./output/falsePileupsWithStats.csv",
-                          outputStatsPath="./output/stats.csv",
                           outputVarDbMergedPath="./output/varDbMerged-reduced.csv"){
   #TODO: make returnMergedDb true in release
 
@@ -354,9 +347,6 @@ loadVarDb <- function(inputVariantsDb=NULL){
 		if(is.data.table(varDb)!=TRUE){
 		  stop("varDb is not a data.table!")
 		}
-		if(colnames(varDb[,c("CHROM","POS","REF","ALT")])!=c("CHROM","POS","REF","ALT")){
-		  stop("CHROM,POS,REF,ALT are not present in varDb colnames!")
-		}
 		varDb <- normalizeDeletions(varDb)
 		if(verbose==TRUE){print("Deletions normalized.")}
 		#varDb <- setTenthColumnNameInVcfToGenotype(vcfTable = varDb)
@@ -573,168 +563,168 @@ calculateNucStats <- function(chrom="", pos="",ref="", nuc="", countsOnly=FALSE,
   out <- tryCatch(
 	{
 	  if(countsOnly==TRUE){
-		dt <- data.table(
-		  CHROM=unlist(chrom)
-		  ,POS=unlist(pos)
-		  ,NUC=strsplit(unlist(nuc),"")[[1]]
-		)
-		
-		nucCounts <- data.table(CHROM=dt[1]$CHROM,POS=dt[1]$POS,countA=nrow(dt[NUC=="A",]),countC=nrow(dt[NUC=="C",])
-								,countG=nrow(dt[NUC=="G",]),countT=nrow(dt[NUC=="T",]),countIn=nrow(dt[NUC=="+",])
-								,countDel=nrow(dt[NUC=="-",],countN=nrow(dt[NUC=="N",]))
-		)
-		nucCounts[is.na(nucCounts)] <- 0 
-		return(nucCounts)
+  		dt <- data.table(
+  		  CHROM=unlist(chrom)
+  		  ,POS=unlist(pos)
+  		  ,NUC=strsplit(unlist(nuc),"")[[1]]
+  		)
+  		
+  		nucCounts <- data.table(CHROM=dt[1]$CHROM,POS=dt[1]$POS,countA=nrow(dt[NUC=="A",]),countC=nrow(dt[NUC=="C",])
+  								,countG=nrow(dt[NUC=="G",]),countT=nrow(dt[NUC=="T",]),countIn=nrow(dt[NUC=="+",])
+  								,countDel=nrow(dt[NUC=="-",],countN=nrow(dt[NUC=="N",]))
+  		)
+  		nucCounts[is.na(nucCounts)] <- 0 
+  		return(nucCounts)
 	  }else{
-		#x <- 5805
-		dt <- data.table(
-		  CHROM=unlist(rep(chrom,length(nuc)))
-		  ,POS=unlist(rep(pos,length(nuc)))
-		  ,REF=unlist(rep(ref,length(nuc)))
-		  ,NUC=unlist(nuc)
-		  ,BQ=as.integer(unlist(bq)) # BQ decoded!
-		  ,MQ=as.integer(unlist(mq)) # MQ decoded!
-		  ,PR=as.integer(unlist(pr))
-		)
-		#View(dt)
-		
-		
-		subsetRef <- subset(dt, NUC==REF)
-		subsetNonRef <- subset(dt, NUC!=REF) 
-		
-		if(nrow(subsetRef)==0){
-		  minMQ_REF <- 0
-		  maxMQ_REF <- 0
-		  medianMQ_REF <- 0
-		  minBQ_REF <- 0
-		  maxBQ_REF <- 0
-		  medianBQ_REF <- 0
-		  minPR_REF <- 0
-		  maxPR_REF <- 0
-		  medianPR_REF <- 0
-		}else{
-		  minMQ_REF <- as.double(min(subsetRef[,MQ]))
-		  maxMQ_REF <- as.double(max(subsetRef[,MQ]))
-		  medianMQ_REF <- as.double(median(subsetRef[,MQ]))
-		  minBQ_REF <- as.double(min(subsetRef[,BQ]))
-		  maxBQ_REF <- as.double(max(subsetRef[,BQ]))
-		  medianBQ_REF <- as.double(median(subsetRef[,BQ]))
-		  minPR_REF <- as.double(min(subsetRef[,PR]))
-		  maxPR_REF <- as.double(max(subsetRef[,PR]))
-		  medianPR_REF <- as.double(median(subsetRef[,PR]))
-		}
-		
-		
-		if(nrow(subsetNonRef)==0){
-		  minMQ_NREF <- 0
-		  maxMQ_NREF <- 0
-		  medianMQ_NREF <- 0
-		  minBQ_NREF <- 0
-		  maxBQ_NREF <- 0
-		  medianBQ_NREF <- 0
-		  minPR_NREF <- 0
-		  maxPR_NREF <- 0
-		  medianPR_NREF <- 0
-		  
-		  maxNonRefCount <- 0
-		  minMQ_MNREF <- 0
-		  maxMQ_MNREF <- 0
-		  medianMQ_MNREF <- 0
-		  minBQ_MNREF <- 0
-		  maxBQ_MNREF <- 0
-		  medianBQ_MNREF <- 0
-		  minPR_MNREF <- 0
-		  maxPR_MNREF <- 0
-		  medianPR_MNREF <- 0
-		}else{
-		  minMQ_NREF <- as.double(min(subsetNonRef[,MQ]))
-		  maxMQ_NREF <- as.double(max(subsetNonRef[,MQ]))
-		  medianMQ_NREF <- as.double(median(subsetNonRef[,MQ]))
-		  minBQ_NREF <- as.double(min(subsetNonRef[,BQ]))
-		  maxBQ_NREF <- as.double(max(subsetNonRef[,BQ]))
-		  medianBQ_NREF <- as.double(median(subsetNonRef[,BQ]))
-		  minPR_NREF <- as.double(min(subsetNonRef[,PR]))
-		  maxPR_NREF <- as.double(max(subsetNonRef[,PR]))
-		  medianPR_NREF <- as.double(median(subsetNonRef[,PR]))
-		  
-		  
-		  maxNonRefChrom <- names(sort(table(subsetNonRef$NUC),decreasing=TRUE)[1])
-		  subsetMaxNonRef <- subset(subsetNonRef,NUC==maxNonRefChrom)
-		  
-		  maxNonRefCount <- nrow(subsetMaxNonRef)#max(subsetNonRef[, .(count = .N), by = NUC]$count)
-		  minMQ_MNREF <- as.double(min(subsetMaxNonRef[,MQ]))
-		  maxMQ_MNREF <- as.double(max(subsetMaxNonRef[,MQ]))
-		  medianMQ_MNREF <- as.double(median(subsetMaxNonRef[,MQ]))
-		  minBQ_MNREF <- as.double(min(subsetMaxNonRef[,BQ]))
-		  maxBQ_MNREF <- as.double(max(subsetMaxNonRef[,BQ]))
-		  medianBQ_MNREF <- as.double(median(subsetMaxNonRef[,BQ]))
-		  minPR_MNREF <- as.double(min(subsetMaxNonRef[,PR]))
-		  maxPR_MNREF <- as.double(max(subsetMaxNonRef[,PR]))
-		  medianPR_MNREF <- as.double(median(subsetMaxNonRef[,PR]))
-		}
-		
-		summaryDt <- data.table(#CHROM=dt[1]$CHROM,POS=dt[1]$POS,#REF=dt[1]$REF,
-		  #NUC=nuc,BQ=bq,MQ=mq,PR=pr,
-		  countA=nrow(dt[NUC=="A",]),countC=nrow(dt[NUC=="C",]),countG=nrow(dt[NUC=="G",]),
-		  countT=nrow(dt[NUC=="T",]),countIn=nrow(dt[NUC=="+",]),countDel=nrow(dt[NUC=="-",]),countN=nrow(dt[NUC=="N",]),
-		  RefCount=as.integer(nrow(subsetRef)),#dt[NUC==REF, .(count = .N), by = NUC], #policz w NUC wystąpienia REF
-		  AllNonRefCount=as.integer(nrow(subsetNonRef)),#dt[NUC!=REF, .(count = .N), by = NUC],
-		  MaxNonRefCount=as.integer(maxNonRefCount),
-		  
-		  #DP2=nrow(dt),
-		  #MaxNonRefRate=maxNonRefCount/nrow(dt[NUC==REF]),
-		  #VAF=MaxNonRefCount/DP2,
-		  #VRF=RefCount/DP2,
-		  
-		  MinMQ=as.double(min(dt[,MQ])),#all ref maxnonref allnonref
-		  MaxMQ=as.double(max(dt[,MQ])),
-		  MedianMQ=as.double(median(dt[,MQ])),
-		  MinBQ=as.double(min(dt[,BQ])),
-		  MaxBQ=as.double(max(dt[,BQ])),
-		  MedianBQ=as.double(median(dt[,BQ])),
-		  MinPR=as.double(min(dt[,PR])),
-		  MaxPR=as.double(max(dt[,PR])),
-		  MedianPR=as.double(median(dt[,PR])),
-		  
-		  
-		  MinMQ_REF=minMQ_REF,#all ref maxnonref allnonref
-		  MaxMQ_REF=maxMQ_REF,
-		  MedianMQ_REF=medianMQ_REF,
-		  MinBQ_REF=minBQ_REF,
-		  MaxBQ_REF=maxBQ_REF,
-		  MedianBQ_REF=medianBQ_REF,
-		  MinPR_REF=minPR_REF,
-		  MaxPR_REF=maxPR_REF,
-		  MedianPR_REF=medianPR_REF,
-		  
-		  
-		  MinMQ_NREF=minMQ_NREF,#all ref maxnonref allnonref
-		  MaxMQ_NREF=maxMQ_NREF,
-		  MedianMQ_NREF=medianMQ_NREF,
-		  MinBQ_NREF=minBQ_NREF,
-		  MaxBQ_NREF=maxBQ_NREF,
-		  MedianBQ_NREF=medianBQ_NREF,
-		  MinPR_NREF=minPR_NREF,
-		  MaxPR_NREF=maxPR_NREF,
-		  MedianPR_NREF=medianPR_NREF,
-		  
-		  MinMQ_MNREF=minMQ_MNREF,#all ref maxnonref allnonref
-		  MaxMQ_MNREF=maxMQ_MNREF,
-		  MedianMQ_MNREF=medianMQ_MNREF,
-		  MinBQ_MNREF=minBQ_MNREF,
-		  MaxBQ_MNREF=maxBQ_MNREF,
-		  MedianBQ_MNREF=medianBQ_MNREF,
-		  MinPR_MNREF=minPR_MNREF,
-		  MaxPR_MNREF=maxPR_MNREF,
-		  MedianPR_MNREF=medianPR_MNREF
-		  #class
-		)
-		
-		summaryDt[is.na(summaryDt)] <- 0 
-		#summaryDt[is.infinite(summaryDt)] <- 0 
-		#for (j in 1:ncol(summaryDt)){set(summaryDt, which(!is.finite(summaryDt[[j]])), j, 0)}
-		
-		return(summaryDt)
+  		#x <- 5805
+  		dt <- data.table(
+  		  CHROM=unlist(rep(chrom,length(nuc)))
+  		  ,POS=unlist(rep(pos,length(nuc)))
+  		  ,REF=unlist(rep(ref,length(nuc)))
+  		  ,NUC=unlist(nuc)
+  		  ,BQ=as.integer(unlist(bq)) # BQ decoded!
+  		  ,MQ=as.integer(unlist(mq)) # MQ decoded!
+  		  ,PR=as.integer(unlist(pr))
+  		)
+  		#View(dt)
+  		
+  		
+  		subsetRef <- subset(dt, NUC==REF)
+  		subsetNonRef <- subset(dt, NUC!=REF) 
+  		
+  		if(nrow(subsetRef)==0){
+  		  minMQ_REF <- 0
+  		  maxMQ_REF <- 0
+  		  medianMQ_REF <- 0
+  		  minBQ_REF <- 0
+  		  maxBQ_REF <- 0
+  		  medianBQ_REF <- 0
+  		  minPR_REF <- 0
+  		  maxPR_REF <- 0
+  		  medianPR_REF <- 0
+  		}else{
+  		  minMQ_REF <- as.double(min(subsetRef[,MQ]))
+  		  maxMQ_REF <- as.double(max(subsetRef[,MQ]))
+  		  medianMQ_REF <- as.double(median(subsetRef[,MQ]))
+  		  minBQ_REF <- as.double(min(subsetRef[,BQ]))
+  		  maxBQ_REF <- as.double(max(subsetRef[,BQ]))
+  		  medianBQ_REF <- as.double(median(subsetRef[,BQ]))
+  		  minPR_REF <- as.double(min(subsetRef[,PR]))
+  		  maxPR_REF <- as.double(max(subsetRef[,PR]))
+  		  medianPR_REF <- as.double(median(subsetRef[,PR]))
+  		}
+  		
+  		
+  		if(nrow(subsetNonRef)==0){
+  		  minMQ_NREF <- 0
+  		  maxMQ_NREF <- 0
+  		  medianMQ_NREF <- 0
+  		  minBQ_NREF <- 0
+  		  maxBQ_NREF <- 0
+  		  medianBQ_NREF <- 0
+  		  minPR_NREF <- 0
+  		  maxPR_NREF <- 0
+  		  medianPR_NREF <- 0
+  		  
+  		  maxNonRefCount <- 0
+  		  minMQ_MNREF <- 0
+  		  maxMQ_MNREF <- 0
+  		  medianMQ_MNREF <- 0
+  		  minBQ_MNREF <- 0
+  		  maxBQ_MNREF <- 0
+  		  medianBQ_MNREF <- 0
+  		  minPR_MNREF <- 0
+  		  maxPR_MNREF <- 0
+  		  medianPR_MNREF <- 0
+  		}else{
+  		  minMQ_NREF <- as.double(min(subsetNonRef[,MQ]))
+  		  maxMQ_NREF <- as.double(max(subsetNonRef[,MQ]))
+  		  medianMQ_NREF <- as.double(median(subsetNonRef[,MQ]))
+  		  minBQ_NREF <- as.double(min(subsetNonRef[,BQ]))
+  		  maxBQ_NREF <- as.double(max(subsetNonRef[,BQ]))
+  		  medianBQ_NREF <- as.double(median(subsetNonRef[,BQ]))
+  		  minPR_NREF <- as.double(min(subsetNonRef[,PR]))
+  		  maxPR_NREF <- as.double(max(subsetNonRef[,PR]))
+  		  medianPR_NREF <- as.double(median(subsetNonRef[,PR]))
+  		  
+  		  
+  		  maxNonRefChrom <- names(sort(table(subsetNonRef$NUC),decreasing=TRUE)[1])
+  		  subsetMaxNonRef <- subset(subsetNonRef,NUC==maxNonRefChrom)
+  		  
+  		  maxNonRefCount <- nrow(subsetMaxNonRef)#max(subsetNonRef[, .(count = .N), by = NUC]$count)
+  		  minMQ_MNREF <- as.double(min(subsetMaxNonRef[,MQ]))
+  		  maxMQ_MNREF <- as.double(max(subsetMaxNonRef[,MQ]))
+  		  medianMQ_MNREF <- as.double(median(subsetMaxNonRef[,MQ]))
+  		  minBQ_MNREF <- as.double(min(subsetMaxNonRef[,BQ]))
+  		  maxBQ_MNREF <- as.double(max(subsetMaxNonRef[,BQ]))
+  		  medianBQ_MNREF <- as.double(median(subsetMaxNonRef[,BQ]))
+  		  minPR_MNREF <- as.double(min(subsetMaxNonRef[,PR]))
+  		  maxPR_MNREF <- as.double(max(subsetMaxNonRef[,PR]))
+  		  medianPR_MNREF <- as.double(median(subsetMaxNonRef[,PR]))
+  		}
+  		
+  		summaryDt <- data.table(#CHROM=dt[1]$CHROM,POS=dt[1]$POS,#REF=dt[1]$REF,
+  		  #NUC=nuc,BQ=bq,MQ=mq,PR=pr,
+  		  countA=nrow(dt[NUC=="A",]),countC=nrow(dt[NUC=="C",]),countG=nrow(dt[NUC=="G",]),
+  		  countT=nrow(dt[NUC=="T",]),countIn=nrow(dt[NUC=="+",]),countDel=nrow(dt[NUC=="-",]),countN=nrow(dt[NUC=="N",]),
+  		  RefCount=as.integer(nrow(subsetRef)),#dt[NUC==REF, .(count = .N), by = NUC], #policz w NUC wystąpienia REF
+  		  AllNonRefCount=as.integer(nrow(subsetNonRef)),#dt[NUC!=REF, .(count = .N), by = NUC],
+  		  MaxNonRefCount=as.integer(maxNonRefCount),
+  		  
+  		  #DP2=nrow(dt),
+  		  #MaxNonRefRate=maxNonRefCount/nrow(dt[NUC==REF]),
+  		  #VAF=MaxNonRefCount/DP2,
+  		  #VRF=RefCount/DP2,
+  		  
+  		  MinMQ=as.double(min(dt[,MQ])),#all ref maxnonref allnonref
+  		  MaxMQ=as.double(max(dt[,MQ])),
+  		  MedianMQ=as.double(median(dt[,MQ])),
+  		  MinBQ=as.double(min(dt[,BQ])),
+  		  MaxBQ=as.double(max(dt[,BQ])),
+  		  MedianBQ=as.double(median(dt[,BQ])),
+  		  MinPR=as.double(min(dt[,PR])),
+  		  MaxPR=as.double(max(dt[,PR])),
+  		  MedianPR=as.double(median(dt[,PR])),
+  		  
+  		  
+  		  MinMQ_REF=minMQ_REF,#all ref maxnonref allnonref
+  		  MaxMQ_REF=maxMQ_REF,
+  		  MedianMQ_REF=medianMQ_REF,
+  		  MinBQ_REF=minBQ_REF,
+  		  MaxBQ_REF=maxBQ_REF,
+  		  MedianBQ_REF=medianBQ_REF,
+  		  MinPR_REF=minPR_REF,
+  		  MaxPR_REF=maxPR_REF,
+  		  MedianPR_REF=medianPR_REF,
+  		  
+  		  
+  		  MinMQ_NREF=minMQ_NREF,#all ref maxnonref allnonref
+  		  MaxMQ_NREF=maxMQ_NREF,
+  		  MedianMQ_NREF=medianMQ_NREF,
+  		  MinBQ_NREF=minBQ_NREF,
+  		  MaxBQ_NREF=maxBQ_NREF,
+  		  MedianBQ_NREF=medianBQ_NREF,
+  		  MinPR_NREF=minPR_NREF,
+  		  MaxPR_NREF=maxPR_NREF,
+  		  MedianPR_NREF=medianPR_NREF,
+  		  
+  		  MinMQ_MNREF=minMQ_MNREF,#all ref maxnonref allnonref
+  		  MaxMQ_MNREF=maxMQ_MNREF,
+  		  MedianMQ_MNREF=medianMQ_MNREF,
+  		  MinBQ_MNREF=minBQ_MNREF,
+  		  MaxBQ_MNREF=maxBQ_MNREF,
+  		  MedianBQ_MNREF=medianBQ_MNREF,
+  		  MinPR_MNREF=minPR_MNREF,
+  		  MaxPR_MNREF=maxPR_MNREF,
+  		  MedianPR_MNREF=medianPR_MNREF
+  		  #class
+  		)
+  		
+  		summaryDt[is.na(summaryDt)] <- 0 
+  		#summaryDt[is.infinite(summaryDt)] <- 0 
+  		#for (j in 1:ncol(summaryDt)){set(summaryDt, which(!is.finite(summaryDt[[j]])), j, 0)}
+  		
+  		return(summaryDt)
 	  }
     },
     error=function(cond) {
@@ -757,75 +747,75 @@ addStatsColumnsToPileup <- function(pileups=NULL, outputPileupsWithStatsPath="",
   out <- tryCatch(
 	{
 		  #TODO: READ pileups with stats
-		  if(newPileupsWithStats==TRUE){
-			res <- copy(pileups)
-			tic(paste0("Stats calculated. Pileups, nrow: ", nrow(res), " time"))
-			if(countsOnly==TRUE){
-			  res[,c("CHROM","POS","countA","countC","countG","countT","countIn","countN","countDel"):=
-					calculateNucStats(chrom=CHROM, pos=POS, nuc=NUC, countsOnly=TRUE, bq=BQ, mq=MQ, pr=PR), by=1:nrow(res)]
-			}else{
-			  #View(res)
-			  res[,c(#"CHROM","POS","REF",
-				#"NUC","BQ","MQ","PR",
-				"countA","countC","countG","countT","countIn","countDel","countN",
-				"RefCount",
-				"AllNonRefCount",
-				"MaxNonRefCount",
-				
-				#"DP2",
-				#"MaxNonRefRate",
-				
-				"MinMQ",
-				"MaxMQ",
-				"MedianMQ",
-				"MinBQ",
-				"MaxBQ",
-				"MedianBQ",
-				"MinPR",
-				"MaxPR",
-				"MedianPR",
-				"MinMQ_REF",
-				"MaxMQ_REF",
-				"MedianMQ_REF",
-				"MinBQ_REF",
-				"MaxBQ_REF",
-				"MedianBQ_REF",
-				"MinPR_REF",
-				"MaxPR_REF",
-				"MedianPR_REF",
-				"MinMQ_NREF",
-				"MaxMQ_NREF",
-				"MedianMQ_NREF",
-				"MinBQ_NREF",
-				"MaxBQ_NREF",
-				"MedianBQ_NREF",
-				"MinPR_NREF",
-				"MaxPR_NREF",
-				"MedianPR_NREF",
-				"MinMQ_MNREF",
-				"MaxMQ_MNREF",
-				"MedianMQ_MNREF",
-				"MinBQ_MNREF",
-				"MaxBQ_MNREF",
-				"MedianBQ_MNREF",
-				"MinPR_MNREF",
-				"MaxPR_MNREF",
-				"MedianPR_MNREF"
-			  ):=calculateNucStats(chrom=CHROM, pos=POS, ref=REF, nuc=NUC, 
-								   countsOnly=FALSE, bq=BQ, mq=MQ, pr=PR), by=1:nrow(res)]
-			}  
-			toc()
-			if(rmCols==TRUE){
-			  res[, `:=`(NUC = NULL,BQ = NULL,MQ = NULL,PR = NULL)]
-			}
-			fwrite(res, outputPileupsWithStatsPath, sep= " ")
+		  if(newPileupsWithStats==TRUE | !file.exists(outputPileupsWithStatsPath)){
+  			res <- copy(pileups)
+  			tic(paste0("Stats calculated. Pileups, nrow: ", nrow(res), " time"))
+  			if(countsOnly==TRUE){
+  			  res[,c("CHROM","POS","countA","countC","countG","countT","countIn","countN","countDel"):=
+  					calculateNucStats(chrom=CHROM, pos=POS, nuc=NUC, countsOnly=TRUE, bq=BQ, mq=MQ, pr=PR), by=1:nrow(res)]
+  			}else{
+  			  #View(res)
+  			  res[,c(#"CHROM","POS","REF",
+  				#"NUC","BQ","MQ","PR",
+  				"countA","countC","countG","countT","countIn","countDel","countN",
+  				"RefCount",
+  				"AllNonRefCount",
+  				"MaxNonRefCount",
+  				
+  				#"DP2",
+  				#"MaxNonRefRate",
+  				
+  				"MinMQ",
+  				"MaxMQ",
+  				"MedianMQ",
+  				"MinBQ",
+  				"MaxBQ",
+  				"MedianBQ",
+  				"MinPR",
+  				"MaxPR",
+  				"MedianPR",
+  				"MinMQ_REF",
+  				"MaxMQ_REF",
+  				"MedianMQ_REF",
+  				"MinBQ_REF",
+  				"MaxBQ_REF",
+  				"MedianBQ_REF",
+  				"MinPR_REF",
+  				"MaxPR_REF",
+  				"MedianPR_REF",
+  				"MinMQ_NREF",
+  				"MaxMQ_NREF",
+  				"MedianMQ_NREF",
+  				"MinBQ_NREF",
+  				"MaxBQ_NREF",
+  				"MedianBQ_NREF",
+  				"MinPR_NREF",
+  				"MaxPR_NREF",
+  				"MedianPR_NREF",
+  				"MinMQ_MNREF",
+  				"MaxMQ_MNREF",
+  				"MedianMQ_MNREF",
+  				"MinBQ_MNREF",
+  				"MaxBQ_MNREF",
+  				"MedianBQ_MNREF",
+  				"MinPR_MNREF",
+  				"MaxPR_MNREF",
+  				"MedianPR_MNREF"
+  			  ):=calculateNucStats(chrom=CHROM, pos=POS, ref=REF, nuc=NUC, 
+  								   countsOnly=FALSE, bq=BQ, mq=MQ, pr=PR), by=1:nrow(res)]
+  			}  
+  			toc()
+  			if(rmCols==TRUE){
+  			  res[, `:=`(NUC = NULL,BQ = NULL,MQ = NULL,PR = NULL)]
+  			}
+  			fwrite(res, outputPileupsWithStatsPath, sep= " ")
 		  }else{
-			if(file.exists(outputPileupsWithStatsPath)){
-			  res <- fread(outputPileupsWithStatsPath)
-			  if(verbose==TRUE){print("pileupsWithStatsPath restored from outputPileupsWithStatsPath file.")}
-			}else{
-			  stop("outputPileupsWithStatsPath file is not present! Please provide a valid outputPileupsWithStatsPath or set newPileupsWithStatsPath=TRUE")
-			}
+  			if(file.exists(outputPileupsWithStatsPath)){
+  			  res <- fread(outputPileupsWithStatsPath)
+  			  if(verbose==TRUE){print("pileupsWithStatsPath restored from outputPileupsWithStatsPath file.")}
+  			}else{
+  			  stop("outputPileupsWithStatsPath file is not present! Please provide a valid outputPileupsWithStatsPath or set newPileupsWithStatsPath=TRUE")
+  			}
 			
 		  }
       },
@@ -1370,6 +1360,18 @@ calculateDepths <- function(variantsTable=""){
   #variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT:="-","AD":=AD+countDel]
   #variantsTable[substr(ALT,1,1) == "N" ,"AD":=AD+countN] # ALT is never N 
   
+  if("varCount" %in% colnames(variantsTable)){variantsTable[, `:=`(varCount = NULL)]}
+  variantsTable[, `:=`(varCount = integer(0))]
+  variantsTable[,c("varCount")][is.na(variantsTable[,c("varCount")])] <- 0
+  #AD + indele
+  variantsTable[AD>0,"varCount":=varCount+AD]
+  
+  variantsTable[(nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-", "varCount":=varCount+countIn]
+  variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-","varCount":=varCount+countDel]
+  #variantsTable[substr(ALT,1,1) == "N" ,"varCount":=varCount+countN] # ALT is never N 
+  
+  
+  
   # nucleotides not matching REF or ALT
   #if(!("nullDepth" %in% colnames(variantsTable))){
   #  variantsTable[, `:=`(nullDepth = integer(0))]
@@ -1395,70 +1397,6 @@ calculateDepths <- function(variantsTable=""){
   variantsTable[,c("errFlag")][is.na(variantsTable[,c("errFlag")])] <- 0 
   
   return(variantsTable)
-}
-
-setTenthColumnNameInVcfToGenotype <- function(vcfTable=""){
-    out <- tryCatch(
-    {
-		colnames(vcfTable)[10] <- "GENOTYPE"
-    },
-    error=function(cond) {
-	  message("Something went wrong. Function: setTenthColumnNameInVcfToGenotype")
-	  message("This function changes the input data.tables 10th column name to 'GENOTYPE'.")
-	  message("Returns: data.table with 10th column name changed to 'GENOTYPE'")
-      message("Original error message:\n")
-      message(cond)
-      return(NA)
-    },
-    finally={
-		return(vcfTable)
-    }
-  )  
-  if(verbose==TRUE){print("Variant classification complete.")}
-  return(out)
-}
-
-#TODO: try-catch, merge with getVcfHcFc
-#gunzipPath, loadVcfData, filterChroms, normalizeDeletions, setTenthColumnNameInVcfToGenotype
-getVcfHcGeneral <- function(vcfHcGeneralPath=""){
-  # GATK HAPLOTYPECALLER - general scan
-  if(file.exists(vcfHcGeneralPath)!=TRUE){
-    stop("vcfHcGeneral file does not exist!")
-  }
-  vcfHcGeneral <- loadVcfData(vcfHcGeneralPath)
-  if(verbose==TRUE){print("vcfHcGeneral file loaded.")}
-  vcfHcGeneral <- setTenthColumnNameInVcfToGenotype(vcfHcGeneral)
-  vcfHcGeneral <- filterChroms(vcfHcGeneral)
-  vcfHcGeneral <- normalizeDeletions(vcfHcGeneral)
-  if(unique(unique(vcfHcGeneral$CHROM) %in% c(1:22, "X", "Y", "M"))!=TRUE){
-    stop("Invalid chromosomes (not: 1:22, X, Y, M) present in vcfHcGeneral!")
-  }
-  return(vcfHcGeneral)
-}
-
-#TODO: try-catch
-#gunzipPath, loadVcfData, filterChroms, normalizeDeletions, setTenthColumnNameInVcfToGenotype
-getVcfHcFc <- function(vcfHcFcPath=""){
-  # GATK HAPLOTYPECALLER - forcecalling
-  if(file.exists(vcfHcFcPath)!=TRUE){
-    stop("vcfHcFc file does not exist!")
-  }
-  vcfHcFc <- loadVcfData(vcfHcFcPath)
-  if(verbose==TRUE){print("vcfHcFc file loaded.")}
-  vcfHcFc <- setTenthColumnNameInVcfToGenotype(vcfHcFc)
-  vcfHcFc01 <- vcfHcFc[like(GENOTYPE,"0/1")]
-  vcfHcFc11 <- vcfHcFc[like(GENOTYPE,"1/1")]
-  vcfHcFc <- rbind(vcfHcFc01, vcfHcFc11)
-  rm(vcfHcFc01, vcfHcFc11)
-  
-  vcfHcFc <- filterChroms(vcfHcFc)
-  vcfHcFc <- normalizeDeletions(vcfHcFc)
-  
-  if(!setequal(unique(substr(vcfHcFc$GENOTYPE,1,3)),c("0/1","1/1"))){
-    stop("GENOTYPE should be only 0/1 or 1/1!")
-  }
-
-  return(vcfHcFc)
 }
 
 #TODO: try-catch
@@ -1524,76 +1462,44 @@ evaluateClassifier <- function(naiveDataStats=NULL, classifierDataStats=NULL){
 evaluateClassifierPlot <- function(evaluationData=NULL, plotTitle="", plotFolderPath=""){
   out <- tryCatch(
     {
-	  eval <- copy(evaluationData)
-	  series <- colnames(eval)[colnames(eval)!=c("lower","upper")]
-	  labelHalfLength <- nchar(as.character(max(eval$upper)))
-	  eval[,subset:=paste(str_pad(lower,labelHalfLength,pad = "0"),str_pad(upper,labelHalfLength,pad = "0"),sep = "-")]
-	  #if(
-	  eval[subset==with(eval, subset[lower==min(lower) & upper==max(upper)]),subset:="All DPs"]
-	  eval[, `:=`(lower=NULL,upper=NULL)]
-	  #eval <- melt(eval, id.vars="subset", measure.vars = c("FPRdiff","TPRdiff"), variable.name = "metric")
-	  eval <- melt(eval, id.vars="subset", measure.vars = series, variable.name = "metric")
-	  evalPlot <- ggplot(eval, aes(subset, value, fill=metric)) + 
-		geom_bar(stat="identity", position="dodge") + 
-		geom_text(aes(label=round(value,digits = 2)), vjust=-0.3, position=position_dodge(1.0), size=2.5) +
-		scale_fill_manual(values = c("#0000FF","#FF0000")) +
-		theme(axis.text.x = element_text(face="bold", color="#993333", angle=45),
-          axis.text.y = element_text(face="bold", color="#993333", angle=45)) + 
-	  #scale_y_continuous(labels=scales::percent_format()) +
-	  ylab("value [%]") +
-		ggtitle(plotTitle)
-	  
-	  if(!dir.exists(plotFolderPath)) dir.create(plotFolderPath)
-	  pdf(paste0(plotFolderPath,plotTitle,".pdf"))
-	  plot(evalPlot)
-	  dev.off()
-	  if(verbose==TRUE){print(paste0("Plot ",plotFolderPath,plotTitle,".pdf saved."))}  
+      eval <- copy(evaluationData)
+      series <- colnames(eval)[colnames(eval)!=c("lower","upper")]
+      eval[,subset:=as.factor(paste(lower,upper,sep = "-"))]
+      eval$subset <- factor(eval$subset, levels=eval[,subset,by=.GRP]$subset)
+      eval[, `:=`(lower=NULL,upper=NULL)]
+      #eval <- melt(eval, id.vars="subset", measure.vars = c("FPRdiff","TPRdiff"), variable.name = "metric")
+      eval <- melt(eval, id.vars="subset", measure.vars = series, variable.name = "metric")
+      evalPlot <- ggplot(eval, aes(subset, value, fill=metric)) + 
+        geom_bar(stat="identity", position="dodge") + 
+        geom_text(aes(label=round(value,digits = 2)), vjust=-0.3, position=position_dodge(1.0), size=2.5) +
+        scale_fill_manual(values = c("#0000FF","#FF0000")) +
+        theme(axis.text.x = element_text(face="bold", color="#993333", angle=45),
+              axis.text.y = element_text(face="bold", color="#993333", angle=45)) + 
+        #scale_y_continuous(labels=scales::percent_format()) +
+        ylab("value [%]") +
+        xlab("DP subset") +
+        ggtitle(plotTitle)
+      
+      if(!dir.exists(plotFolderPath)) dir.create(plotFolderPath)
+      pdf(paste0(plotFolderPath,str_replace_all(plotTitle," ","_"),".pdf"))
+      plot(evalPlot)
+      dev.off()
+      if(verbose==TRUE){print(paste0("Plot ",plotFolderPath,str_replace_all(plotTitle," ","_"),".pdf saved."))}  
     },
     error=function(cond) {
-	  message("Something went wrong. Function: evaluateClassifierPlot")
-	  message("This function plots the results of classifier evaluation.")
-	  message("Returns: the plot with results of classifier evaluation. Saves the plot to external file.")
+      message("Something went wrong. Function: evaluateClassifierPlot")
+      message("This function plots the results of classifier evaluation.")
+      message("Returns: the plot with results of classifier evaluation. Saves the plot to external file.")
       message("Original error message:\n")
       message(cond)
       return(NA)
     },
     finally={
-		return(evalPlot)
+      return(evalPlot)
     }
   )  
   return(out)
 }
-
-#TODO: try-catch
-getDpFromVcf <- function(vcf=NULL){
-  DP <- data.table(DP=as.integer(do.call(rbind,str_split(vcf[,"GENOTYPE"][[1]],":"))[,3]))
-  res <- cbind(vcf,DP)
-  return(res)
-}
-
-#TODO: try-catch
-#getDpFromVcf
-getHcTpInSubsets <- function(subsetBounds=NULL, haplotypeCallerVcf=NULL){
-  cd <- copy(haplotypeCallerVcf)
-  cd <- getDpFromVcf(vcf=cd)
-  bounds <- copy(subsetBounds[,1:4])
-  rowAll <- bounds[1]
-  rowAll[,c("lower","upper"):=data.table(min(bounds$lower),max(bounds$upper))]
-  bounds <- rbind(rowAll, bounds)
-  res <- lapply(1:nrow(bounds), function(i){
-    lower <- bounds[i,lower]
-    upper <- bounds[i,upper]
-    params <- list(
-      lower = lower,
-      upper = upper,
-      TP = length(which(cd$DP >= lower & cd$DP <= upper))
-    )
-    return(params)
-  })
-  res <- rbindlist(res)
-  return(res) 
-}
-
 
 
 
@@ -1628,7 +1534,6 @@ if(train==TRUE){
   newModelClassificationData <- classify(model=model, newData = trainingData)
   newModelStats <- getClassificationStats(subsetBounds = subsetDpDataTable, classificationData = newModelClassificationData)
   
-  
   eval <- evaluateClassifier(naiveDataStats = baselineStats, classifierDataStats = newModelStats)
   #eval <- evaluateClassifier(naiveDataStats = newModelStats, classifierDataStats = baselineStats)
   plot <- evaluateClassifierPlot(evaluationData = eval, plotTitle=plotTitle, plotFolderPath=plotFolderPath)
@@ -1643,96 +1548,13 @@ if(verbose==TRUE){print("Pileup merged with varDb.")}
 varDb.merged <- calculateDepths(varDb.merged)
 if(verbose==TRUE){print("Depths calculated.")}
 
-#TODO: HC fc/general should be loaded and processed here
-if(HCTest==TRUE){
-  vcfHcGeneral <- getVcfHcGeneral(vcfHcGeneralPath=vcfHcGeneralPath)
-  vcfHcFc <- getVcfHcFc(vcfHcFcPath=vcfHcFcPath)
-  vcfHcGeneral <- getDpFromVcf(vcf=vcfHcGeneral)
-  vcfHcFc <- getDpFromVcf(vcf=vcfHcFc)
-  xtp <- getHcTpInSubsets(subsetBounds = histogramData,haplotypeCallerVcf = vcfHcFc)
+#TODO: sprawdzic kolumny
+if(fullMergedDb==TRUE){ 
+  fwrite(varDb.merged, outputVarDbMergedPath)
+}else{
+  fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","countA","countC","countG","countT","countIn","countDel","countN","RD","AD","varCount","nullDepth","DP","errFlag")], outputVarDbMergedPath)
 }
-
-
-
-
-
-
-#getVcfHcFcStats
-
-
-
-
-#getVcfHcGeneralStats
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#TODO: tidy up everything below this line, put into functions, place before the main part of the script etc.
-#TODO: correct stats calculation
-if(returnStats==TRUE){
-  FNPlusTP <- nrow(varDb.merged) # P = TP + FN, total number of positives
-  ccTP <- sum(varDb.merged[,result=="variant"], na.rm=TRUE) # pileups on P set only; 
-  ccFN <- sum(varDb.merged[,result=="nonVariant"], na.rm=TRUE) #Error in eval(jsub, SDenv, parent.frame()) : object 'result' not found
-
-  # ===== TPR ===== # sensitivity: TPR = TP/(TP+FN)
-  ccTPR <- ccTP/FNPlusTP # ClinvarCaller, forcecalling
   
-  if(HCTest==TRUE){
-    hcGeneralTP <- nrow(vcfHcGeneral[CHROM %in% varDb$CHROM & POS %in% varDb$POS])
-    hcFcTP <- nrow(vcfHcFc[CHROM %in% varDb$CHROM & POS %in% varDb$POS]) # pileups on P set only, could be nrow(vcfHcFc)
-    hcGeneralTPR <- hcGeneralTP/FNPlusTP # GATK HaplotypeCaller, general scan
-    hcFcTPR <- hcFcTP/FNPlusTP # GATK HaplotypeCaller, forcecalling
-  }
-
-  #====================================================================== TPR ^ ======================================================================
-#====================================================================== CC + HC sum v ======================================================================
-
-  if(HCTest==TRUE){
-    variantsCcPos<-subset(varDb.merged, result=="variant")
-    variantsCcPos<-variantsCcPos[,c("CHROM","POS","REF","ALT")]
-    variantsHcPos<-vcfHcFc[,c("CHROM","POS","REF","ALT")]
-    ccHcOR<-rbind(variantsCcPos,variantsHcPos)
-    setkeyv(ccHcOR, c("CHROM","POS"))
-    ccHcOR <- subset(unique(ccHcOR, by=c("CHROM","POS")))
-    ccHcAND <- variantsHcPos[CHROM %in% variantsCcPos$CHROM & POS %in% variantsCcPos$POS] # variants in both cc and hc
-    variantsHcOnly <- ccHcOR[!variantsCcPos]
-    variantsCcOnly <- ccHcOR[!variantsHcPos]
-    rm(variantsCcPos,variantsHcPos)
-    
-    variantsHcOnlyCount <- nrow(variantsHcOnly)
-    variantsCcOnlyCount <- nrow(variantsCcOnly)
-    variantsHcOnlyInDelCount <- nrow(variantsHcOnly[nchar(as.character(ALT))!=nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)]) + nrow(variantsHcOnly[variantsHcOnly[,ALT=="-"]]) + nrow(variantsHcOnly[variantsHcOnly[,ALT=="+"]])
-    variantsCcOnlyInDelCount <- nrow(variantsCcOnly[nchar(as.character(ALT))!=nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)]) + nrow(variantsCcOnly[variantsCcOnly[,ALT=="-"]]) + nrow(variantsCcOnly[variantsCcOnly[,ALT=="+"]])
-    variantsHcOnlySnpCount <- nrow(variantsHcOnly[nchar(as.character(ALT))==nchar(as.character(REF)) & variantsHcOnly[,ALT!="-"] & variantsHcOnly[,ALT!="+"]])
-    #unique(variantsHcOnly[nchar(as.character(ALT))==nchar(as.character(REF))][,REF]) # SNP check
-    variantsCcOnlySnpCount <- nrow(variantsCcOnly[nchar(as.character(ALT))==nchar(as.character(REF)) & variantsCcOnly[,ALT!="-"] & variantsCcOnly[,ALT!="+"]])
-    #unique(variantsCcOnly[nchar(as.character(ALT))==nchar(as.character(REF))][,REF]) # SNP check
-  }
-#====================================================================== CC + HC sum ^ ======================================================================
-  
-  stats <- data.table(FNPlusTP=FNPlusTP,ccTP=ccTP,ccFN=ccFN,ccTPR=ccTPR)
-  
-  if(HCTest==TRUE){
-    stats <- cbind(stats,data.table(hcGeneralTP=hcGeneralTP,hcFcTP=hcFcTP,hcGeneralTPR=hcGeneralTPR,hcFcTPR=hcFcTPR,variantsHcOnlyCount=variantsHcOnlyCount,
-    variantsCcOnlyCount=variantsCcOnlyCount,variantsHcOnlyInDelCount=variantsHcOnlyInDelCount,
-    variantsCcOnlyInDelCount=variantsCcOnlyInDelCount,variantsHcOnlySnpCount=variantsHcOnlySnpCount,
-    variantsCcOnlySnpCount=variantsCcOnlySnpCount))
-  }
-  fwrite(stats, outputStatsPath)
-  if(verbose==TRUE){print("Stats ready.")}
-}
-
-fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","countA","countC","countG","countT","countIn","countDel","RD","AD","nullDepth","DP","errFlag")], outputVarDbMergedPath)
 if(verbose==TRUE){print("varDb.merged exported to external file.")}
 
 
@@ -1741,10 +1563,10 @@ if(verbose==TRUE){print("varDb.merged exported to external file.")}
 res <- list()
 if(returnPileups==TRUE){res <- append(res,list(pileups=pileups, falsePileups=falsePileups))}
 if(returnPositionsAll==TRUE){res <- append(res, list(positionsAll=positionsAll))}
-if(returnPositionsAllFalse==TRUE){res <- append(res, list(positionsAllFalse=positionsAllFalse))}
-if(returnStats==TRUE){res <- append(res,list(stats=stats))}
+if(returnPositionsAllFalse==TRUE){res <- append(res, list(positionsAllFalse=positionsAllFalse))} #TODO: tylko jak liczone
+#if(returnStats==TRUE){res <- append(res,list(stats=stats))}
 if(returnMergedDb==TRUE){res <- append(res,list(varDb.merged=varDb.merged))}
-if(returnSubsetDpDataTable==TRUE){res <- append(res,list(subsetDpDataTable=subsetDpDataTable))}
+if(returnSubsetDpDataTable==TRUE){res <- append(res,list(subsetDpDataTable=subsetDpDataTable))} #TODO: tylko jak liczone
   
 return(res)
 
