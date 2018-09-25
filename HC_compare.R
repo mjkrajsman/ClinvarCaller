@@ -1,17 +1,15 @@
 library(data.table)
 library(Rsamtools)
 library(tools)
-
-#wczytaj wynik CC - varDB.merged, zrob podejscie naiwne
-
-#wez DP z CC, podziel na kubełki
-#wez DP z HC, podziel na kubelki
+library(stringr)
 
 
-HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
-                      vcfHcFcPath="./input/corriell_S7-HCScanFC.vcf.gz",
+HCCompare <- function(vcfHcGeneralPath="./input/coriell_S7-HCScan.vcf.gz",
+                      vcfHcFcPath="./input/coriell_S7-HCScanFC.vcf.gz",
                       varDbMergedPath="./output/varDbMerged-reduced.csv",
                       outputStatsPath="./output/stats.csv",
+                      lowerSubsetBounds = c(1,2,6,11,21,51,101,201), 
+                      upperSubsetBounds = c(1,5,10,20,50,100,200,9999),
                       verbose=TRUE){
   
   gunzipPath <- function(string){
@@ -38,6 +36,32 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
   }
   
   
+  initializeSubsetDpBounds <- function(lowerBounds = c(1,2,6,11,21,51,101,201), upperBounds = c(1,5,10,20,50,100,200,9999)){
+    out <- tryCatch(
+      {
+        if(length(lowerBounds)!=length(upperBounds)){
+          stop("lowerBounds and upperBounds have different sizes!")
+        }
+        if(!all(lowerBounds<=upperBounds)){
+          stop("All values in lowerBounds have to be lower than corresponding values in upperBounds!")
+        }
+        subsetDpDataTable <- data.table("lower"=lowerBounds,
+                                        "upper"=upperBounds)		
+      },
+      error=function(cond) {
+        message("Something went wrong. Function: initializeSubsetDpBounds")
+        message("This function creates a subsetDpBins data.table, which contains lower and upper values of DP ranges used in calculations.")
+        message("Returns: data.table with DP values.")
+        message("Original error message:\n")
+        message(cond)
+        return(NA)
+      },
+      finally={
+        return(subsetDpDataTable)
+      })
+    return(out)
+  }
+  
   filterChroms <- function(input){
     out <- tryCatch(
       {
@@ -58,19 +82,21 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
   }
   
   #gunzipPath
-  loadVcfData <- function(vcfPath=""){
+  loadVcfData <- function(vcfPath="", dropMultiallelic=TRUE){
     out <- tryCatch(
       {
         res <- fread(gunzipPath(vcfPath), skip = "CHROM")
         colnames(res)[colnames(res)=="#CHROM"] <- "CHROM"
         res$CHROM <- gsub("chr", "", res$CHROM)
-        res <- res[!like(ALT,",")] # remove multiallelic sites
+        if(dropMultiallelic==TRUE){
+          res <- res[!like(ALT,",")] # drop multiallelic sites
+        }
         res <- subset(unique(res, by=c("CHROM","POS")))
         res[CHROM == "MT" ,"CHROM":="M"]
       },
       error=function(cond) {
         message("Something went wrong. Function: loadVcfFile")
-        message("This function loads a data from a VCF file at specified vcfPath.")
+        message("This function loads a data from a VCF file at specified vcfPath. If dropMultiallelic is set to TRUE, all multiallelic sites are dropped.")
         message("Returns: VCF data")
         message("Original error message:\n")
         message(cond)
@@ -123,14 +149,13 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
     return(out)
   }
   
-  #TODO: try-catch
   #gunzipPath, loadVcfData, filterChroms, normalizeDeletions, setTenthColumnNameInVcfToGenotype
   getVcfHcGeneral <- function(vcfHcGeneralPath=""){
     # GATK HAPLOTYPECALLER - general scan
     if(file.exists(vcfHcGeneralPath)!=TRUE){
       stop("vcfHcGeneral file does not exist!")
     }
-    vcfHcGeneral <- loadVcfData(vcfHcGeneralPath)
+    vcfHcGeneral <- loadVcfData(vcfHcGeneralPath,dropMultiallelic=FALSE)
     if(verbose==TRUE){print("vcfHcGeneral file loaded.")}
     vcfHcGeneral <- setTenthColumnNameInVcfToGenotype(vcfHcGeneral)
     vcfHcGeneral <- filterChroms(vcfHcGeneral)
@@ -141,14 +166,13 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
     return(vcfHcGeneral)
   }
   
-  #TODO: try-catch
   #gunzipPath, loadVcfData, filterChroms, normalizeDeletions, setTenthColumnNameInVcfToGenotype
   getVcfHcFc <- function(vcfHcFcPath=""){
     # GATK HAPLOTYPECALLER - forcecalling
     if(file.exists(vcfHcFcPath)!=TRUE){
       stop("vcfHcFc file does not exist!")
     }
-    vcfHcFc <- loadVcfData(vcfHcFcPath)
+    vcfHcFc <- loadVcfData(vcfHcFcPath,dropMultiallelic=FALSE)
     if(verbose==TRUE){print("vcfHcFc file loaded.")}
     vcfHcFc <- setTenthColumnNameInVcfToGenotype(vcfHcFc)
     vcfHcFc01 <- vcfHcFc[like(GENOTYPE,"0/1")]
@@ -167,18 +191,22 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
   }
   
   
-  #TODO: try-catch
   getDpFromVcf <- function(vcf=NULL){
     DP <- data.table(DP=as.integer(do.call(rbind,str_split(vcf[,"GENOTYPE"][[1]],":"))[,3]))
     res <- cbind(vcf,DP)
     return(res)
   }
   
-  #TODO: try-catch
+  getDpFromVarDb <- function(vcf=NULL,varDb=NULL){
+    res <- merge(vcf, varDb[,c("CHROM","POS","DP")], by=c("CHROM","POS"), all.x=TRUE, all.y=FALSE)
+    return(res)
+  }
+  
   #getDpFromVcf
   getHcTpInSubsets <- function(subsetBounds=NULL, haplotypeCallerVcf=NULL){
     cd <- copy(haplotypeCallerVcf)
     cd <- getDpFromVcf(vcf=cd)
+    #cd <- getDpFromVarDb(vcf=cd,varDb=varDb)
     bounds <- copy(subsetBounds[,1:4])
     rowAll <- bounds[1]
     rowAll[,c("lower","upper"):=data.table(min(bounds$lower),max(bounds$upper))]
@@ -196,49 +224,43 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
     res <- rbindlist(res)
     return(res) 
   }
+
+calculateStats <- function(subsetDpBounds=NULL, varDb.merged=NULL, vcfHcGeneral=NULL, vcfHcFc=NULL){
+  bounds <- copy(subsetDpBounds[,1:2])
+  rowAll <- bounds[1]
+  rowAll[,c("lower","upper"):=data.table(min(bounds$lower),max(bounds$upper))]
+  bounds <- rbind(rowAll, bounds)
   
-  #vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz"
-  #vcfHcFcPath="./input/corriell_S7-HCScanFC.vcf.gz"
-  #varDbMergedPath="./output/varDbMerged-reduced.csv"
-  #outputStatsPath="./output/stats.csv"
+
   
-
-
-    varDb.merged <- fread(varDbMergedPath)
-  #TODO: HC fc/general should be loaded and processed here
-    vcfHcGeneral <- getVcfHcGeneral(vcfHcGeneralPath=vcfHcGeneralPath)
-    vcfHcFc <- getVcfHcFc(vcfHcFcPath=vcfHcFcPath)
-    vcfHcGeneral <- getDpFromVcf(vcf=vcfHcGeneral)
-    vcfHcFc <- getDpFromVcf(vcf=vcfHcFc)
-    xtp <- getHcTpInSubsets(subsetBounds = histogramData,haplotypeCallerVcf = vcfHcFc)
-
-  #TODO: tidy up everything below this line, put into functions, place before the main part of the script etc.
-  #TODO: correct stats calculation
+  
+  res <- lapply(1:nrow(bounds), function(i){
     # ===== TPR ===== # sensitivity: TPR = TP/(TP+FN)
-    FNPlusTP <- nrow(varDb.merged) # P = TP + FN, total number of positives
-    
-    ccTP <- sum(varDb.merged[,varCount>0], na.rm=TRUE) # pileups on P set only; 
-    ccFN <- sum(varDb.merged[,varCount==0], na.rm=TRUE)
+    FNPlusTP <- nrow(varDb.merged[(DP <= bounds[i,upper]) & (DP >= bounds[i,lower])]) # P = TP + FN, total number of positives
+    ccTP <- sum(varDb.merged[(DP <= bounds[i,upper]) & (DP >= bounds[i,lower]),varCount>0], na.rm=TRUE) # pileups on P set only; 
+    ccFN <- sum(varDb.merged[(DP <= bounds[i,upper]) & (DP >= bounds[i,lower]),varCount==0], na.rm=TRUE)
     ccTPR <- ccTP/FNPlusTP # ClinvarCaller, forcecalling
     
-    hcGeneralTP <- nrow(vcfHcGeneral[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS])
+    hcGeneralTP <- nrow(vcfHcGeneral[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS 
+                                     & (DP <= bounds[i,upper])  & (DP >= bounds[i,lower])])
+    #TODO: FN+TP from HC? DP does not match DP from CC.
     hcGeneralTPR <- hcGeneralTP/FNPlusTP # GATK HaplotypeCaller, general scan
       
-    hcFcTP <- nrow(vcfHcFc[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS]) # pileups on P set only, could be nrow(vcfHcFc)
+    hcFcTP <- nrow(vcfHcFc[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS & (DP <= bounds[i,upper])  & (DP >= bounds[i,lower])]) # pileups on P set only, could be nrow(vcfHcFc)
     hcFcTPR <- hcFcTP/FNPlusTP # GATK HaplotypeCaller, forcecalling
 
     
     #====================================================================== TPR ^ ======================================================================
     #====================================================================== CC + HC sum v ======================================================================
 
-      variantsCcPos<-subset(varDb.merged, varCount>0)
-      variantsCcPos<-variantsCcPos[,c("CHROM","POS","REF","ALT")]
+      variantsCcPos<-subset(varDb.merged, varCount>0 & (DP <= bounds[i,upper])  & (DP >= bounds[i,lower]))
+      variantsCcPos<-variantsCcPos[,c("CHROM","POS","REF","ALT","DP")]
       
-      variantsHcPos<-vcfHcFc[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS,c("CHROM","POS","REF","ALT")]
+      variantsHcPos<-vcfHcFc[CHROM %in% varDb.merged$CHROM & POS %in% varDb.merged$POS & (DP <= bounds[i,upper])  & (DP >= bounds[i,lower]),c("CHROM","POS","REF","ALT","DP")]
       ccHcOR<-rbind(variantsCcPos,variantsHcPos)
       setkeyv(ccHcOR, c("CHROM","POS"))
       ccHcOR <- subset(unique(ccHcOR, by=c("CHROM","POS")))
-      ccHcAND <- variantsHcPos[CHROM %in% variantsCcPos$CHROM & POS %in% variantsCcPos$POS] # variants in both cc and hc
+      ccHcAND <- variantsHcPos[CHROM %in% variantsCcPos$CHROM & POS %in% variantsCcPos$POS & (DP <= bounds[i,upper])  & (DP >= bounds[i,lower])] # variants in both cc and hc
       variantsHcOnly <- ccHcOR[!variantsCcPos]
       variantsCcOnly <- ccHcOR[!variantsHcPos]
       rm(variantsCcPos,variantsHcPos)
@@ -262,10 +284,26 @@ HCCompare <- function(vcfHcGeneralPath="./input/corriell_S7-HCScan.vcf.gz",
                         variantsHcOnlyCount=variantsHcOnlyCount,variantsCcOnlyCount=variantsCcOnlyCount,
                         variantsHcOnlyInDelCount=variantsHcOnlyInDelCount,variantsCcOnlyInDelCount=variantsCcOnlyInDelCount,
                         variantsHcOnlySnpCount=variantsHcOnlySnpCount,variantsCcOnlySnpCount=variantsCcOnlySnpCount)
-
-    fwrite(stats, outputStatsPath)
-    if(verbose==TRUE){print("Stats ready.")}
-
     return(stats)
+  })
+  res <- rbindlist(res)
+  res <- cbind(bounds,res)
+  return(res)
+  
+}
+
+
+subsetDpBounds <- initializeSubsetDpBounds(lowerBounds = lowerSubsetBounds, upperBounds = upperSubsetBounds)
+varDb.merged <- fread(varDbMergedPath)
+vcfHcGeneral <- getVcfHcGeneral(vcfHcGeneralPath=vcfHcGeneralPath)
+vcfHcGeneral <- getDpFromVarDb(vcf = vcfHcGeneral,varDb = varDb.merged)
+vcfHcFc <- getVcfHcFc(vcfHcFcPath=vcfHcFcPath)
+vcfHcFc <- getDpFromVarDb(vcf = vcfHcFc,varDb = varDb.merged)
+stats <- calculateStats(subsetDpBounds=subsetDpBounds, varDb.merged=varDb.merged, vcfHcGeneral=vcfHcGeneral,vcfHcFc=vcfHcFc)
+
+fwrite(stats, outputStatsPath)
+if(verbose==TRUE){print("Stats ready.")}
+
+return(stats)
 
 }

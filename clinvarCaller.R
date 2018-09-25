@@ -8,37 +8,55 @@ library(BSgenome.Hsapiens.UCSC.hg38)
 library(ggplot2)
 library(caret)
 
-#TODO: optimize new(...)=TRUE/FALSE usage
-#TODO: optional: multi-threading?
-clinvarCaller <- function(newCoverage=TRUE,newPileups=TRUE,newFalsePileups=TRUE,newPostitionsAll=FALSE,
-                          newPositionsAllFalse=TRUE,newPileupsWithStats=TRUE,newFalsePileupsWithStats=TRUE,hg38=TRUE,
-                          returnMergedDb=FALSE,returnPileups=TRUE,returnPositionsAll=TRUE,returnPositionsAllFalse=TRUE,
-                          returnSubsetDpDataTable=TRUE,verbose=TRUE,minBaseQuality=0,minMapq=0,fullPileupStats=TRUE,
-                          fullMergedDb=TRUE,train=FALSE,phredOffset=33,
-						              lowerSubsetBounds = c(1,2,6,11,21,51,101,201), 
-						              upperSubsetBounds = c(1,5,10,20,50,100,200,9999),
+clinvarCaller <- function(#general variants
+						  train=FALSE,
+						  newCoverage=TRUE,
+						  newPileups=TRUE,
+						  newPostitionsAll=FALSE,
+						  newPileupsWithStats=TRUE,
+						  hg38=TRUE,
+						  returnPileups=TRUE,
+						  returnPositionsAll=TRUE,
+						  fullPileupStats=TRUE,
+						  verbose=TRUE,
+						  phredOffset=33,
+						  minBaseQuality=0,
+						  minMapq=0,
+						  bamPath="./input/coriell_S7-ready.bam",
                           chromosomeLengthsPath="./input/chromosomeLengths.csv",
-                          bamPath="./input/corriell_S7-ready.bam",
                           inputVariantsDbPath="./input/clinvar_alleles.single.b38.tsv.gz",
-                          modelPath="./input/model.rds",
-                          listOfTrainArguments=list(method="lda",
-                                                       preProc=c("center","zv","scale"),
-                                                       control=trainControl(method="repeatedcv", summaryFunction=twoClassSummary, classProbs=TRUE, 
-                                                                            savePredictions = TRUE, number=5, repeats=3, allowParallel = TRUE), 
-                                                       formula=as.formula(c("VAR~", paste(names(dataSubset[,!c("CHROM","POS","NUC","BQ","MQ","PR","VAR","REF")]), 
-                                                                                          collapse = "+")))     
-                          ),
-						              plotFolderPath="./output/plots/", plotTitle="Classifier evaluation",
-                          outputCoveragePath="./output/corriell_S7-ready",
-                          outputPositionsAllPath="./output/positionsAll.positions",
-                          outputPositionsAllFalsePath="./output/positionsAllFalse.positions",
-                          outputPileupsPath="./output/pileups.mpileup",
-                          outputPileupsFalsePath="./output/pileupsFalse.mpileup",
-                          outputPileupsWithStatsPath="./output/pileupsWithStats.csv",
-                          outputFalsePileupsWithStatsPath="./output/falsePileupsWithStats.csv",
-                          outputVarDbMergedPath="./output/varDbMerged-reduced.csv"){
-  #TODO: make returnMergedDb true in release
-
+                          coveragePath="./output/coriell_S7-ready",
+                          positionsAllPath="./output/positionsAll.positions",			  
+						  pileupsPath="./output/pileups.mpileup",
+						  pileupsWithStatsPath="./output/pileupsWithStats.csv",
+						  modelPath="./input/model.rds",
+						  #training mode only variants
+						  newFalsePileups=TRUE,
+                          newPositionsAllFalse=TRUE,
+						  newFalsePileupsWithStats=TRUE,                          
+						  returnModel=TRUE,
+						  returnFalsePileups=TRUE,
+                          returnPositionsAllFalse=TRUE,
+						  returnSubsetDpDataTable=TRUE,
+                          positionsAllFalsePath="./output/positionsAllFalse.positions",
+                          pileupsFalsePath="./output/pileupsFalse.mpileup",
+                          falsePileupsWithStatsPath="./output/falsePileupsWithStats.csv",
+						  lowerSubsetBounds = c(1,2,6,11,21,51,101,201), 
+                          upperSubsetBounds = c(1,5,10,20,50,100,200,9999),
+						  listOfTrainArguments=list(method="lda", metric="ROC",
+							preProc=c("center","zv","scale"),
+							control=trainControl(method="cv", number=5, summaryFunction=twoClassSummary, verboseIter = TRUE,
+								 classProbs=TRUE, savePredictions = "all", allowParallel = TRUE,
+								 returnResamp = "final", selectionFunction = "best", returnData = FALSE,
+								preProcOptions = list(verbose=TRUE)), 
+							formula=as.formula(c("VAR~", paste(names(dataSubset[,!c("CHROM","POS","NUC","BQ","MQ","PR","VAR","REF")]), collapse = "+")))     
+							  ),
+						  #classification mode only variants
+						  returnMergedDb=TRUE,
+                          fullMergedDb=TRUE,
+						  varDbMergedPath="./output/varDbMerged-reduced.csv"
+){
+  
 if(hg38==TRUE){
   library(BSgenome.Hsapiens.UCSC.hg38)
 }else{
@@ -194,16 +212,16 @@ getCoverageFromBed <- function(bedPath=""){
   return(out)
 }
 
-#TODO: try-catch
+
 #gunzipPath, makeBed, getCoverageFromBed, filterChroms
-getCoverage <- function(outputCoveragePath="", bamPath="", new=FALSE){
+getCoverage <- function(coveragePath="", bamPath="", new=FALSE){
     out <- tryCatch(
 		{
-			if(new==TRUE | !file.exists(paste0(outputCoveragePath,".per-base.bed.gz"))){
-				bedPath <- makeBed(outputCoveragePath=outputCoveragePath, bamPath=bamPath)
+			if(new==TRUE | !file.exists(paste0(coveragePath,".per-base.bed.gz"))){
+				bedPath <- makeBed(coveragePath=coveragePath, bamPath=bamPath)
 				if(verbose==TRUE){print("Coverage file (BED) created.")}
 			}else{
-			  bedPath <- paste0(outputCoveragePath,".per-base.bed.gz")
+			  bedPath <- paste0(coveragePath,".per-base.bed.gz")
 			}
 			if(!file.exists(bedPath)){
 			  stop("BED file is not present!")
@@ -212,7 +230,7 @@ getCoverage <- function(outputCoveragePath="", bamPath="", new=FALSE){
 		},
 		error=function(cond) {
 		  message("Something went wrong. Function: getCoverage")
-		  message("This function reads the coverage for the specified BAM file (bamPath) from its coverage file (outputCoveragePath). If the coverage file does not exist or the 'new' atrribute is set to TRUE, the file is created beforehand.")
+		  message("This function reads the coverage for the specified BAM file (bamPath) from its coverage file (coveragePath). If the coverage file does not exist or the 'new' atrribute is set to TRUE, the file is created beforehand.")
 		  message("Returns: data.table containing coverage data for the specified BAM file")
 		  message("Original error message:\n")
 		  message(cond)
@@ -247,28 +265,30 @@ getFileExtension <- function(path="", removeLastExt = FALSE){
   return(out)
 }
 
-#TODO: merge with loadTsvData?
+
 #gunzipPath
-loadVcfData <- function(vcfPath=""){
-   out <- tryCatch(
+loadVcfData <- function(vcfPath="", dropMultiallelic=TRUE){
+  out <- tryCatch(
     {
-  	  res <- fread(gunzipPath(vcfPath), skip = "CHROM")
-  	  colnames(res)[colnames(res)=="#CHROM"] <- "CHROM"
-  	  res$CHROM <- gsub("chr", "", res$CHROM)
-  	  res <- res[!like(ALT,",")] # remove multiallelic sites
-  	  res <- subset(unique(res, by=c("CHROM","POS")))
-  	  res[CHROM == "MT" ,"CHROM":="M"]
+      res <- fread(gunzipPath(vcfPath), skip = "CHROM")
+      colnames(res)[colnames(res)=="#CHROM"] <- "CHROM"
+      res$CHROM <- gsub("chr", "", res$CHROM)
+      if(dropMultiallelic==TRUE){
+        res <- res[!like(ALT,",")] # drop multiallelic sites
+      }
+      res <- subset(unique(res, by=c("CHROM","POS")))
+      res[CHROM == "MT" ,"CHROM":="M"]
     },
     error=function(cond) {
-	  message("Something went wrong. Function: loadVcfFile")
-	  message("This function loads a data from a VCF file at specified vcfPath.")
-	  message("Returns: VCF data")
+      message("Something went wrong. Function: loadVcfFile")
+      message("This function loads a data from a VCF file at specified vcfPath. If dropMultiallelic is set to TRUE, all multiallelic sites are dropped.")
+      message("Returns: VCF data")
       message("Original error message:\n")
       message(cond)
       return(NA)
     },
     finally={
-		return(res)
+      return(res)
     })
   return(out)
 }
@@ -299,7 +319,6 @@ loadTsvData <- function(tsvPath=""){
   return(out)
 }
 
-#TODO: check if positions arent already normalized, make insertions=="+"?
 normalizeDeletions <- function(vcfData=""){
   out <- tryCatch(
     {
@@ -328,7 +347,7 @@ loadVarDb <- function(inputVariantsDb=NULL){
 			if(file.exists(inputVariantsDb)){
 					varDbFormat <- getFileExtension(inputVariantsDb, removeLastExt = TRUE)					
 					if(varDbFormat=="vcf"){
-						varDb <- loadVcfData(inputVariantsDb)
+						varDb <- loadVcfData(inputVariantsDb, dropMultiallelic=TRUE)
 						if(verbose==TRUE){print("varDb VCF data loaded.")}
 					}
 					if(varDbFormat=="tsv"){
@@ -394,13 +413,12 @@ getUniqueLoci <- function(vcfData=NULL, variationType="", saveNucleotideData=FAL
   return(out)
 }
 
-#TODO: check if works
 #getUniqueLoci
 getPositions <- function(positionsAll="", varDb=NULL, new=FALSE){
   out <- tryCatch(
 	{
 		if(typeof(positionsAll)=="character"){
-			if(new==TRUE | !file.exists(outputPositionsAllPath)){
+			if(new==TRUE | !file.exists(positionsAllPath)){
 				res <- getUniqueLoci(varDb)
 				positionsAll2 <- copy(res)
 				positionsAll2[,"CHROM":=paste0("chr",CHROM)]
@@ -411,14 +429,14 @@ getPositions <- function(positionsAll="", varDb=NULL, new=FALSE){
 				if(file.exists(positionsAll)){
 				  res <- fread(positionsAll)
 				  res$CHROM <- gsub("chr", "", res$CHROM)
-				  if(verbose==TRUE){print("positionsAll restored from outputPositionsAllPath file.")}
+				  if(verbose==TRUE){print("positionsAll restored from positionsAllPath file.")}
 				}else{
 				  stop("outputPositionsAll file is not present! Please provide a valid path!")
 				}
 			}
 		}else{
 			if(new==TRUE){
-				stop("outputPositionsAllPath has to be a string if you want to create a new file!")
+				stop("positionsAllPath has to be a string if you want to create a new file!")
 			}else{
 				res <- positionsAll
 			}
@@ -426,7 +444,7 @@ getPositions <- function(positionsAll="", varDb=NULL, new=FALSE){
 	},
     error=function(cond) {
 	  message("Something went wrong. Function: getPositions")
-	  message("This function extracts positions from external file (outputPositionsAllPath) or data.table with CHROM and POS (varDb) columns. In the second case, it also writes them to the external file (outputPositionsAllPath). If argument new is set to TRUE, new file will be created from varDb, regardless of its previous existence.")
+	  message("This function extracts positions from external file (positionsAllPath) or data.table with CHROM and POS (varDb) columns. In the second case, it also writes them to the external file (positionsAllPath). If argument new is set to TRUE, new file will be created from varDb, regardless of its previous existence.")
 	  message("Returns: data.table with CHROM + POS extracted from varDb. Also writes an external file.")
       message("Original error message:\n")
       message(cond)
@@ -467,7 +485,6 @@ addRefFromReferenceGenome <- function(dt="", hg38=TRUE){
   return(out) 
 }
 
-#TODO: offset parameter
 phredQualityDecode <- function(n=0, offset=33){
   out <- tryCatch(
 	{
@@ -506,7 +523,6 @@ phredQualityEncode <- function(n, offset=33){
   return(out) 
 }
 
-#TODO: merge with doPileups?
 #addRefFromReferenceGenome, phredQualityDecode, phredQualityEncode
 pileupVariantDatabase <- function(lociPath="",pileupPath="",bamPath="",minBaseQuality=0,minMapq=0,phredOffset=33,newPileups=TRUE,normalizeData=TRUE,hg38=TRUE){
   out <- tryCatch(
@@ -741,13 +757,11 @@ calculateNucStats <- function(chrom="", pos="",ref="", nuc="", countsOnly=FALSE,
   return(out)	  
 }
 
-#TODO: try-catch
 #calculateNucStats
-addStatsColumnsToPileup <- function(pileups=NULL, outputPileupsWithStatsPath="", countsOnly=FALSE, rmCols=FALSE, newPileupsWithStats=TRUE){
+addStatsColumnsToPileup <- function(pileups=NULL, pileupsWithStatsPath="", countsOnly=FALSE, rmCols=FALSE, newPileupsWithStats=TRUE){
   out <- tryCatch(
 	{
-		  #TODO: READ pileups with stats
-		  if(newPileupsWithStats==TRUE | !file.exists(outputPileupsWithStatsPath)){
+		  if(newPileupsWithStats==TRUE | !file.exists(pileupsWithStatsPath)){
   			res <- copy(pileups)
   			tic(paste0("Stats calculated. Pileups, nrow: ", nrow(res), " time"))
   			if(countsOnly==TRUE){
@@ -804,20 +818,19 @@ addStatsColumnsToPileup <- function(pileups=NULL, outputPileupsWithStatsPath="",
   			  ):=calculateNucStats(chrom=CHROM, pos=POS, ref=REF, nuc=NUC, 
   								   countsOnly=FALSE, bq=BQ, mq=MQ, pr=PR), by=1:nrow(res)]
   			}  
-  			toc()
   			if(rmCols==TRUE){
   			  res[, `:=`(NUC = NULL,BQ = NULL,MQ = NULL,PR = NULL)]
   			}
-  			fwrite(res, outputPileupsWithStatsPath, sep= " ")
+  			fwrite(res, pileupsWithStatsPath, sep= " ")
 		  }else{
-  			if(file.exists(outputPileupsWithStatsPath)){
-  			  res <- fread(outputPileupsWithStatsPath)
-  			  if(verbose==TRUE){print("pileupsWithStatsPath restored from outputPileupsWithStatsPath file.")}
+  			if(file.exists(pileupsWithStatsPath)){
+  			  res <- fread(pileupsWithStatsPath)
   			}else{
-  			  stop("outputPileupsWithStatsPath file is not present! Please provide a valid outputPileupsWithStatsPath or set newPileupsWithStatsPath=TRUE")
+  			  stop("pileupsWithStatsPath file is not present! Please provide a valid pileupsWithStatsPath or set newPileupsWithStatsPath=TRUE")
   			}
 			
 		  }
+	  toc()
       },
     error=function(cond) {
 	  message("Something went wrong. Function: addStatsColumnsToPileup")
@@ -833,25 +846,30 @@ addStatsColumnsToPileup <- function(pileups=NULL, outputPileupsWithStatsPath="",
   return(out)	
 }
 
-#TODO: input from variable
-#TODO: check if works
 #pileupVariantDatabase, calculateNucStats, addStatsColumnsToPileup
-doPileups <- function(outputPositionsPath="",outputPileupsPath="",outputPileupsWithStatsPath="",bamPath="",minBaseQuality=0,minMapq=0,phredOffset=33,newPileups=TRUE,newPileupsWithStats=TRUE){
+doPileups <- function(outputPositionsPath="",pileupsPath="",pileupsWithStatsPath="",bamPath="",minBaseQuality=0,minMapq=0,phredOffset=33,newPileups=TRUE,newPileupsWithStats=TRUE,fullPileupStats=TRUE){
   out <- tryCatch(
 	{
-		if(newPileups==TRUE & newPileupsWithStats!=TRUE){
-		  pileups <- pileupVariantDatabase(outputPositionsPath,outputPileupsPath,bamPath,phredOffset=phredOffset,minBaseQuality,minMapq,newPileups=TRUE)
-		  if(verbose==TRUE){print("pileups done.")}
-		}else{
-		  if(file.exists(outputPileupsPath)){
-			pileups <- pileupVariantDatabase(outputPositionsPath,outputPileupsPath,bamPath,phredOffset=phredOffset,minBaseQuality,minMapq,newPileups=FALSE)
-			if(verbose==TRUE){print("pileups restored from outputPileupsPath file.")}
-		  }else{
-			stop("outputPileupsPath file is not present! Please provide a valid outputPileupsPath or set newPileups=TRUE")
-		  }
-		}
-		pileups <- addStatsColumnsToPileup(pileups=pileups, outputPileupsWithStatsPath=outputPileupsWithStatsPath, countsOnly = !(fullPileupStats), rmCols = FALSE, newPileupsWithStats=newPileupsWithStats) #TODO: make rmCols true in release
-		if(verbose==TRUE){print("Pileups: New columns created.")}	
+  	if(newPileupsWithStats==TRUE | !file.exists(pileupsWithStatsPath)){	
+  	  if(newPileups==TRUE){
+  	    pileups <- pileupVariantDatabase(outputPositionsPath,pileupsPath,bamPath,phredOffset=phredOffset,minBaseQuality,minMapq,newPileups=TRUE)
+  	    if(verbose==TRUE){print("pileups done.")}
+  	  }else{
+  	    #if(newPileups==TRUE)
+  	    if(file.exists(pileupsPath)){
+  	      pileups <- pileupVariantDatabase(outputPositionsPath,pileupsPath,bamPath,phredOffset=phredOffset,minBaseQuality,minMapq,newPileups=FALSE)
+  	      if(verbose==TRUE){print("pileups restored from pileupsPath file.")}
+  	    }else{
+  	      stop("pileupsPath file is not present! Please provide a valid pileupsPath or set newPileups=TRUE")
+  	    }
+  	  }
+  	  pileups <- addStatsColumnsToPileup(pileups=pileups, pileupsWithStatsPath=pileupsWithStatsPath, countsOnly = !(fullPileupStats), rmCols = FALSE, newPileupsWithStats=TRUE) 
+  	  if(verbose==TRUE){print("Pileups: New columns created.")}	
+  	}else{
+  	  pileups <- addStatsColumnsToPileup(pileups=pileups, pileupsWithStatsPath=pileupsWithStatsPath, countsOnly = !(fullPileupStats), rmCols = FALSE, newPileupsWithStats=FALSE) 
+  	  if(verbose==TRUE){print("pileupsWithStatsPath restored from pileupsWithStatsPath file.")}
+  	}  
+
 	},
     error=function(cond) {
 	  message("Something went wrong. Function: doPileups")
@@ -1134,13 +1152,11 @@ getRandomPositionsExcludeSubset <- function(coverage=NULL,variantsSetToExclude=N
   return(out)
 }
 
-#TODO: try-catch
 dts_disjoint <- function(dt1,dt2){
     res <- (nrow(fsetdiff(dt1,dt2)) == nrow(dt1))
   return(res)
 }
 
-#TODO: check if works
 #getRandomPositionsExcludeSubset, getRandomPositionsFromCoverage, getCoverageSubsetByReadsCount, getPositionsFromCoverageSubset, getRandomPositions, dts_disjoint
 getFalsePositions <- function(positionsAllFalse=NULL, new=TRUE, coverage=NULL, variantsSetToExclude=NULL, subsetDpDataTable=NULL){
   out <- tryCatch(
@@ -1155,7 +1171,6 @@ getFalsePositions <- function(positionsAllFalse=NULL, new=TRUE, coverage=NULL, v
 			  rm(positionsAllFalse2)
 			  if(verbose==TRUE){print("positionsAllFalse exported to external file.")}
 			  
-			  #TODO: input arguments
 			  if(!dts_disjoint(res[,c("CHROM","POS")],variantsSetToExclude[,c("CHROM","POS")])){
 			    stop("positionsAllFalse and variantsSetToExclude should be disjoint!")
 			  }
@@ -1305,268 +1320,158 @@ classify <- function(model=NULL, newData=NULL){
   return(out)
 }
 
-#TODO: try-catch, clear comments
 mergePileupsWithVarDb <- function(pileups=NULL, varDb=NULL, allx=TRUE, ally=TRUE){
-  tmp <- copy(pileups)
-  if("REF" %in% colnames(tmp)){tmp[, `:=`(REF = NULL)]}
-  if("NUC" %in% colnames(tmp)){tmp[, `:=`(NUC = NULL)]}
-  if("BQ" %in% colnames(tmp)){tmp[, `:=`(BQ = NULL)]}
-  if("MQ" %in% colnames(tmp)){tmp[, `:=`(MQ = NULL)]}
-  if("PR" %in% colnames(tmp)){tmp[, `:=`(PR = NULL)]}
-
-  varDb[,"CHROM":=as.character(CHROM)]
-
-  res <- merge(varDb, tmp[,c("CHROM","POS","RefCount","AllNonRefCount","MaxNonRefCount","InDelMaxLength",
-                             "countA","countC","countG","countT","countIn","countDel","countN","result")], by=c("CHROM","POS"), all.x=allx, all.y=ally)
-  res$result[is.na(res$result)] <- "nonVariant"  #WARN: potentially breaks confusion matrix
-  rm(tmp)
-  #TODO: maybe shorter? 
-  #res[,c("countA","countC","countG","countT","countIn","countDel","countN")][is.na(res[,c("countA","countC","countG","countT","countIn","countDel","countN")])] <- 0
-  res[,][is.na(res[,])] <- 0 
-  
-  return(res)
-}
-
-#TODO: try-catch, clear comments
-calculateDepths <- function(variantsTable=""){
-  
-  # nucleotides matching REF
-  #if(!("RD" %in% colnames(variantsTable))){
-  #  variantsTable[, `:=`(RD = integer(0))]
-  #  }
-  if("RD" %in% colnames(variantsTable)){variantsTable[, `:=`(RD = NULL)]}
-  variantsTable[, `:=`(RD = integer(0))]
-  variantsTable[,c("RD")][is.na(variantsTable[,c("RD")])] <- 0
-  variantsTable[substr(REF,1,1) == "A" ,"RD":=RD+countA]
-  variantsTable[substr(REF,1,1) == "C" ,"RD":=RD+countC]
-  variantsTable[substr(REF,1,1) == "G" ,"RD":=RD+countG]
-  variantsTable[substr(REF,1,1) == "T" ,"RD":=RD+countT]
-  ## variantsTable[nchar(as.character(alt))<nchar(as.character(ref)) & nchar(as.character(alt))>1, "RD":=RD+countIn]
-  ## variantsTable[nchar(as.character(alt))>nchar(as.character(ref)) & nchar(as.character(ref))>1, "RD":=RD+countDel]
-  #variantsTable[substr(REF,1,1) == "N" ,"RD":=RD+countN] # REF is never N 
-  
-  # nucleotides matching ALT
-  #if(!("AD" %in% colnames(variantsTable))){
-  #  variantsTable[, `:=`(AD = integer(0))]
-  #  }
-  if("AD" %in% colnames(variantsTable)){variantsTable[, `:=`(AD = NULL)]}
-  variantsTable[, `:=`(AD = integer(0))]
-  variantsTable[,c("AD")][is.na(variantsTable[,c("AD")])] <- 0
-  variantsTable[ALT == "A" ,"AD":=AD+countA]
-  variantsTable[ALT == "C" ,"AD":=AD+countC]
-  variantsTable[ALT == "G" ,"AD":=AD+countG]
-  variantsTable[ALT == "T" ,"AD":=AD+countT]
-  #variantsTable[nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1),"AD":=AD+countIn]
-  #variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT:="-","AD":=AD+countDel]
-  #variantsTable[substr(ALT,1,1) == "N" ,"AD":=AD+countN] # ALT is never N 
-  
-  if("varCount" %in% colnames(variantsTable)){variantsTable[, `:=`(varCount = NULL)]}
-  variantsTable[, `:=`(varCount = integer(0))]
-  variantsTable[,c("varCount")][is.na(variantsTable[,c("varCount")])] <- 0
-  #AD + indele
-  variantsTable[AD>0,"varCount":=varCount+AD]
-  
-  variantsTable[(nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-", "varCount":=varCount+countIn]
-  variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-","varCount":=varCount+countDel]
-  #variantsTable[substr(ALT,1,1) == "N" ,"varCount":=varCount+countN] # ALT is never N 
-  
-  
-  
-  # nucleotides not matching REF or ALT
-  #if(!("nullDepth" %in% colnames(variantsTable))){
-  #  variantsTable[, `:=`(nullDepth = integer(0))]
-  #  }
-  if("nullDepth" %in% colnames(variantsTable)){variantsTable[, `:=`(nullDepth = NULL)]}
-  variantsTable[, `:=`(nullDepth = integer(0))]
-  variantsTable[,c("nullDepth")][is.na(variantsTable[,c("nullDepth")])] <- 0
-  variantsTable[substr(REF,1,1) != "A" & ALT != "A" ,"nullDepth":=nullDepth+countA]
-  variantsTable[substr(REF,1,1) != "C" & ALT != "C" ,"nullDepth":=nullDepth+countC]
-  variantsTable[substr(REF,1,1) != "G" & ALT != "G" ,"nullDepth":=nullDepth+countG]
-  variantsTable[substr(REF,1,1) != "T" & ALT != "T" ,"nullDepth":=nullDepth+countT]
-  #variantsTable[nchar(as.character(ALT))<=nchar(as.character(REF)),"nullDepth":=nullDepth+countIn]
-  #variantsTable[nchar(as.character(ALT))>=nchar(as.character(REF)),"nullDepth":=nullDepth+countDel]
-  variantsTable[,"nullDepth":=nullDepth+countN] # REF and ALT are never N 
-  
-  # coverage depth
-  variantsTable[,"DP":=countA+countC+countG+countT+countN]
-  #variantsTable[,"depthCtrl":=AD+RD+nullDepth]
-  
-  # error flag
-  #variantsTable[DP!=depthCtrl, "errFlag":=1]
-  variantsTable[nchar(as.character(REF))>1 & nchar(as.character(ALT))>1, "errFlag":=1]
-  variantsTable[,c("errFlag")][is.na(variantsTable[,c("errFlag")])] <- 0 
-  
-  return(variantsTable)
-}
-
-#TODO: try-catch
-getClassificationStats <- function(subsetBounds=NULL, classificationData=NULL){
-  cd <- classificationData
-  bounds <- copy(subsetBounds)
-  rowAll <- bounds[1]
-  rowAll[,c("lower","upper"):=data.table(min(bounds$lower),max(bounds$upper))]
-  bounds <- rbind(rowAll, bounds)
-  res <- lapply(1:nrow(bounds), function(i){
-    lower <- bounds[i,lower]
-    upper <- bounds[i,upper]
-    params <- list(
-      lower = lower,
-      upper = upper,
-      TP = length(which(cd$result == "variant" & cd$VAR == "variant" & cd$DP >= lower & cd$DP <= upper)),
-      FN = length(which(cd$result == "nonVariant" & cd$VAR == "variant" & cd$DP >= lower & cd$DP <= upper)),
-      TN = length(which(cd$result == "nonVariant" & cd$VAR == "nonVariant" & cd$DP >= lower & cd$DP <= upper)),
-      FP = length(which(cd$result == "variant" & cd$VAR == "nonVariant" & cd$DP >= lower & cd$DP <= upper)),
-      P = length(which(cd$VAR == "variant" & cd$DP >= lower & cd$DP <= upper)),
-      N = length(which(cd$VAR == "nonVariant" & cd$DP >= lower & cd$DP <= upper)),
-      TPR = length(which(cd$result == "variant" & cd$VAR == "variant" & cd$DP >= lower & cd$DP <= upper)) / length(which(cd$VAR == "variant" & cd$DP >= lower & cd$DP <= upper)),
-      FPR = length(which(cd$result == "variant" & cd$VAR == "nonVariant" & cd$DP >= lower & cd$DP <= upper)) / length(which(cd$VAR == "nonVariant" & cd$DP >= lower & cd$DP <= upper)),
-      samplesTotal = length(which(cd$DP >= lower & cd$DP <= upper))
-    )
-    return(params)
-  })
-  res <- rbindlist(res)
-  return(res) 
-}
-
-#TODO: try-catch
-evaluateClassifier <- function(naiveDataStats=NULL, classifierDataStats=NULL){
-  if(nrow(naiveDataStats)!=nrow(classifierDataStats)){
-    stop("naiveDataStats and classifierDataStats have different sizes!")
-  }
-  if(!setequal(naiveDataStats$lower,classifierDataStats$lower) | !setequal(naiveDataStats$upper,classifierDataStats$upper)){
-    stop("naiveDataStats and classifierDataStats do not match!")
-  }
-  res <- lapply(1:nrow(naiveDataStats), function(i){
-    if(naiveDataStats[[i,"FPR"]]!=0){
-      FPRdiffProc = -round(100*((classifierDataStats[[i,"FPR"]] - naiveDataStats[[i,"FPR"]])/naiveDataStats[[i,"FPR"]]),digits = 4)
-    }else{
-      FPRdiffProc = -Inf
-    }
-    if(naiveDataStats[[i,"TPR"]]!=0){
-      TPRdiffProc = round(100*((classifierDataStats[[i,"TPR"]] - naiveDataStats[[i,"TPR"]])/naiveDataStats[[i,"TPR"]]),digits = 4)
-    }else{
-      TPRdiffProc = Inf
-    }
-    params <- list(
-      FPRdiff = FPRdiffProc,
-      TPRdiff = TPRdiffProc
-    )
-    return(params)
-  })
-  res <- rbindlist(res)
-  res <- cbind(naiveDataStats[,c("lower","upper")],res)
-  return(res)
-}
-
-#TODO: input: plot title etc.
-evaluateClassifierPlot <- function(evaluationData=NULL, plotTitle="", plotFolderPath=""){
   out <- tryCatch(
     {
-      eval <- copy(evaluationData)
-      series <- colnames(eval)[colnames(eval)!=c("lower","upper")]
-      eval[,subset:=as.factor(paste(lower,upper,sep = "-"))]
-      eval$subset <- factor(eval$subset, levels=eval[,subset,by=.GRP]$subset)
-      eval[, `:=`(lower=NULL,upper=NULL)]
-      #eval <- melt(eval, id.vars="subset", measure.vars = c("FPRdiff","TPRdiff"), variable.name = "metric")
-      eval <- melt(eval, id.vars="subset", measure.vars = series, variable.name = "metric")
-      evalPlot <- ggplot(eval, aes(subset, value, fill=metric)) + 
-        geom_bar(stat="identity", position="dodge") + 
-        geom_text(aes(label=round(value,digits = 2)), vjust=-0.3, position=position_dodge(1.0), size=2.5) +
-        scale_fill_manual(values = c("#0000FF","#FF0000")) +
-        theme(axis.text.x = element_text(face="bold", color="#993333", angle=45),
-              axis.text.y = element_text(face="bold", color="#993333", angle=45)) + 
-        #scale_y_continuous(labels=scales::percent_format()) +
-        ylab("value [%]") +
-        xlab("DP subset") +
-        ggtitle(plotTitle)
-      
-      if(!dir.exists(plotFolderPath)) dir.create(plotFolderPath)
-      pdf(paste0(plotFolderPath,str_replace_all(plotTitle," ","_"),".pdf"))
-      plot(evalPlot)
-      dev.off()
-      if(verbose==TRUE){print(paste0("Plot ",plotFolderPath,str_replace_all(plotTitle," ","_"),".pdf saved."))}  
+	  tmp <- copy(pileups)
+	  if("REF" %in% colnames(tmp)){tmp[, `:=`(REF = NULL)]}
+	  if("NUC" %in% colnames(tmp)){tmp[, `:=`(NUC = NULL)]}
+	  if("BQ" %in% colnames(tmp)){tmp[, `:=`(BQ = NULL)]}
+	  if("MQ" %in% colnames(tmp)){tmp[, `:=`(MQ = NULL)]}
+	  if("PR" %in% colnames(tmp)){tmp[, `:=`(PR = NULL)]}
+
+	  varDb[,"CHROM":=as.character(CHROM)]
+
+	  res <- merge(varDb, tmp[,c("CHROM","POS","RefCount","AllNonRefCount","MaxNonRefCount","InDelMaxLength",
+								 "countA","countC","countG","countT","countIn","countDel","countN","result")], by=c("CHROM","POS"), all.x=allx, all.y=ally)
+	  res$result[is.na(res$result)] <- "nonVariant"  #WARN: potentially breaks confusion matrix
+	  rm(tmp)
+	  res[,][is.na(res[,])] <- 0 
     },
     error=function(cond) {
-      message("Something went wrong. Function: evaluateClassifierPlot")
-      message("This function plots the results of classifier evaluation.")
-      message("Returns: the plot with results of classifier evaluation. Saves the plot to external file.")
+	  message("Something went wrong. Function: mergePileupsWithVarDb")
+	  message("This function merged the input database (vardDb) with the pileup and classification result.")
+	  message("Returns: data.table with results of classification assigned to entries of the input database.")
       message("Original error message:\n")
       message(cond)
       return(NA)
     },
     finally={
-      return(evalPlot)
+      return(res)
     }
   )  
+  if(verbose==TRUE){print("Variant classification complete.")}
   return(out)
 }
 
+calculateDepths <- function(variantsTable=""){
+  out <- tryCatch(
+    {
+	  if("RD" %in% colnames(variantsTable)){variantsTable[, `:=`(RD = NULL)]}
+	  variantsTable[, `:=`(RD = integer(0))]
+	  variantsTable[,c("RD")][is.na(variantsTable[,c("RD")])] <- 0
+	  variantsTable[substr(REF,1,1) == "A" ,"RD":=RD+countA]
+	  variantsTable[substr(REF,1,1) == "C" ,"RD":=RD+countC]
+	  variantsTable[substr(REF,1,1) == "G" ,"RD":=RD+countG]
+	  variantsTable[substr(REF,1,1) == "T" ,"RD":=RD+countT]
 
+	  if("AD" %in% colnames(variantsTable)){variantsTable[, `:=`(AD = NULL)]}
+	  variantsTable[, `:=`(AD = integer(0))]
+	  variantsTable[,c("AD")][is.na(variantsTable[,c("AD")])] <- 0
+	  variantsTable[ALT == "A" ,"AD":=AD+countA]
+	  variantsTable[ALT == "C" ,"AD":=AD+countC]
+	  variantsTable[ALT == "G" ,"AD":=AD+countG]
+	  variantsTable[ALT == "T" ,"AD":=AD+countT]
+
+	  if("varCount" %in% colnames(variantsTable)){variantsTable[, `:=`(varCount = NULL)]}
+	  variantsTable[, `:=`(varCount = integer(0))]
+	  variantsTable[,c("varCount")][is.na(variantsTable[,c("varCount")])] <- 0
+	  #AD + indele
+	  variantsTable[AD>0,"varCount":=varCount+AD]
+	  
+	  variantsTable[(nchar(as.character(ALT))>nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-", "varCount":=varCount+countIn]
+	  variantsTable[(nchar(as.character(ALT))<nchar(as.character(REF)) & substr(as.character(REF),1,1)==substr(as.character(ALT),1,1)) | ALT=="-","varCount":=varCount+countDel]
+
+	  if("nullDepth" %in% colnames(variantsTable)){variantsTable[, `:=`(nullDepth = NULL)]}
+	  variantsTable[, `:=`(nullDepth = integer(0))]
+	  variantsTable[,c("nullDepth")][is.na(variantsTable[,c("nullDepth")])] <- 0
+	  variantsTable[substr(REF,1,1) != "A" & ALT != "A" ,"nullDepth":=nullDepth+countA]
+	  variantsTable[substr(REF,1,1) != "C" & ALT != "C" ,"nullDepth":=nullDepth+countC]
+	  variantsTable[substr(REF,1,1) != "G" & ALT != "G" ,"nullDepth":=nullDepth+countG]
+	  variantsTable[substr(REF,1,1) != "T" & ALT != "T" ,"nullDepth":=nullDepth+countT]
+
+	  variantsTable[,"nullDepth":=nullDepth+countN] # REF and ALT are never N 
+	  
+	  # coverage depth
+	  variantsTable[,"DP":=countA+countC+countG+countT+countN]
+	  #variantsTable[,"depthCtrl":=AD+RD+nullDepth]
+	  
+	  # error flag
+	  #variantsTable[DP!=depthCtrl, "errFlag":=1]
+	  variantsTable[nchar(as.character(REF))>1 & nchar(as.character(ALT))>1, "errFlag":=1]
+	  variantsTable[,c("errFlag")][is.na(variantsTable[,c("errFlag")])] <- 0 
+
+    },
+    error=function(cond) {
+	  message("Something went wrong. Function: calculateDepths")
+	  message("This function calculates the depth of coverage of reference (RD), alternative (AD). Neither REF nor ALT counts are placed in nullDepth column. Since indels do not count towards read, varCount = depthalternative+indels count. Total coverage is placed in DP column. errFlag is placed if the algorith encounter a NA value or a string of incorrect length during execution.")
+	  message("Returns: data.table with total/REF/ALT/neither REF nor ALT allele count.")
+      message("Original error message:\n")
+      message(cond)
+      return(NA)
+    },
+    finally={
+      return(variantsTable)
+    }
+  )  
+  if(verbose==TRUE){print("Variant classification complete.")}
+  return(out)
+}
 
 #main part of the script
-#TODO: put HC/stats and everything else that still needs to be done here
 bamFile <- loadBamFile(bamPath=bamPath)		#gunzipPath, libs: data.table, Rsamtools, testthat
 indexFile <- loadIndexFile(bamPath=bamPath)		#libs: data.table, Rsamtools, testthat
-coverage <- getCoverage(outputCoveragePath=outputCoveragePath, bamPath=bamPath, new=newCoverage)		#gunzipPath, makeBed, getCoverageFromBed libs: data.table, testthat
+coverage <- getCoverage(coveragePath=coveragePath, bamPath=bamPath, new=newCoverage)		#gunzipPath, makeBed, getCoverageFromBed libs: data.table, testthat
 varDb <- loadVarDb(inputVariantsDb=inputVariantsDbPath)		#gunzipPath, getFileExtension, loadVcfData, loadTsvData, normalizeDeletions, libs: data.table, testthat
-positionsAll <- getPositions(positionsAll=outputPositionsAllPath, varDb=varDb, new=newPostitionsAll)		#getUniqueLoci, libs: data.table, testthat
+positionsAll <- getPositions(positionsAll=positionsAllPath, varDb=varDb, new=newPostitionsAll)		#getUniqueLoci, libs: data.table, testthat
 
-pileups <- doPileups(outputPositionsPath=outputPositionsAllPath,outputPileupsPath=outputPileupsPath,outputPileupsWithStatsPath=outputPileupsWithStatsPath,bamPath=bamPath,phredOffset=phredOffset,minBaseQuality=minBaseQuality,minMapq=minMapq,newPileups=newPileups,newPileupsWithStats=newPileupsWithStats)		#pileupVariantDatabase, addStatsColumnsToPileup libs: data.table, testthat
+pileups <- doPileups(outputPositionsPath=positionsAllPath,pileupsPath=pileupsPath,
+                     pileupsWithStatsPath=pileupsWithStatsPath,bamPath=bamPath,phredOffset=phredOffset,
+                     minBaseQuality=minBaseQuality,minMapq=minMapq,newPileups=newPileups,
+                     newPileupsWithStats=newPileupsWithStats,fullPileupStats=fullPileupStats)		#pileupVariantDatabase, addStatsColumnsToPileup libs: data.table, testthat
 
 
 if(train==TRUE){
   subsetDpDataTable <- initializeSubsetDpDataTable(lowerBounds = lowerSubsetBounds, upperBounds = upperSubsetBounds)		#libs: data.table
   subsetDpDataTable <- updateDepthsColumn(subsetBounds=subsetDpDataTable, updateDp=TRUE, updateDpRand=FALSE, pileupsWithNucCols=pileups)
 
-  positionsAllFalse <- getFalsePositions(positionsAllFalse=outputPositionsAllFalsePath, new=newPositionsAllFalse, coverage=coverage,
+  positionsAllFalse <- getFalsePositions(positionsAllFalse=positionsAllFalsePath, new=newPositionsAllFalse, coverage=coverage,
   										variantsSetToExclude=positionsAll, subsetDpDataTable=subsetDpDataTable)		#getRandomPositionsExcludeSubset, libs: data.table, testthat
   print("false pileups:")
-  falsePileups <- doPileups(outputPositionsPath=outputPositionsAllFalsePath, outputPileupsPath=outputPileupsFalsePath,outputPileupsWithStatsPath=outputFalsePileupsWithStatsPath,bamPath=bamPath,phredOffset=phredOffset,minBaseQuality=minBaseQuality,minMapq=minMapq,new=newFalsePileups,newPileupsWithStats=newFalsePileupsWithStats)		#pileupVariantDatabase, addStatsColumnsToPileup libs: data.table, testthat
+  falsePileups <- doPileups(outputPositionsPath=positionsAllFalsePath, pileupsPath=pileupsFalsePath,
+                            pileupsWithStatsPath=falsePileupsWithStatsPath,bamPath=bamPath,phredOffset=phredOffset,
+                            minBaseQuality=minBaseQuality,minMapq=minMapq,new=newFalsePileups,
+                            newPileupsWithStats=newFalsePileupsWithStats,fullPileupStats=fullPileupStats)		#pileupVariantDatabase, addStatsColumnsToPileup libs: data.table, testthat
   subsetDpDataTable <- updateDepthsColumn(subsetBounds=subsetDpDataTable, updateDp=TRUE, updateDpRand=TRUE, pileupsWithNucCols=pileups, falsePileupsWithNucCols = falsePileups)
-  #createHistogram(subsetDpDataTable=subsetDpDataTable, pileups=pileups, falsePileups=falsePileups)		#initializeSubsetDpDataTable, getSubsetDepths, libs: data.table
 
   trainingData <- prepareTrainingData(pileups=pileups, falsePileups=falsePileups)
   model <- trainModel(modelPath=modelPath, data=trainingData,listOfTrainArguments=listOfTrainArguments)
   
-  #test the model
-  baseline <- classifyNaive(newData = trainingData)
-  baselineStats <- getClassificationStats(subsetBounds = subsetDpDataTable, classificationData = baseline)
-  newModelClassificationData <- classify(model=model, newData = trainingData)
-  newModelStats <- getClassificationStats(subsetBounds = subsetDpDataTable, classificationData = newModelClassificationData)
-  
-  eval <- evaluateClassifier(naiveDataStats = baselineStats, classifierDataStats = newModelStats)
-  #eval <- evaluateClassifier(naiveDataStats = newModelStats, classifierDataStats = baselineStats)
-  plot <- evaluateClassifierPlot(evaluationData = eval, plotTitle=plotTitle, plotFolderPath=plotFolderPath)
-  plot
-  #get the regular classification result
-  classificationResult <- classify(model=model, newData=pileups)
+ 
 }else{
   classificationResult <- classify(model=modelPath, newData=pileups)
-}
-varDb.merged <- mergePileupsWithVarDb(pileups=classificationResult, varDb=varDb, allx=TRUE,ally=TRUE)
-if(verbose==TRUE){print("Pileup merged with varDb.")}
-varDb.merged <- calculateDepths(varDb.merged)
-if(verbose==TRUE){print("Depths calculated.")}
-
-#TODO: sprawdzic kolumny
-if(fullMergedDb==TRUE){ 
-  fwrite(varDb.merged, outputVarDbMergedPath)
-}else{
-  fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","countA","countC","countG","countT","countIn","countDel","countN","RD","AD","varCount","nullDepth","DP","errFlag")], outputVarDbMergedPath)
-}
+  varDb.merged <- mergePileupsWithVarDb(pileups=classificationResult, varDb=varDb, allx=TRUE,ally=TRUE)
+  if(verbose==TRUE){print("Pileup merged with varDb.")}
+  varDb.merged <- calculateDepths(varDb.merged)
+  if(verbose==TRUE){print("Depths calculated.")}
   
-if(verbose==TRUE){print("varDb.merged exported to external file.")}
-
-
+  if(fullMergedDb==TRUE){ 
+    fwrite(varDb.merged, varDbMergedPath)
+  }else{
+    fwrite(varDb.merged[,c("CHROM","POS","REF","ALT","countA","countC","countG","countT","countIn","countDel","countN","RD","AD","varCount","nullDepth","DP","errFlag")], varDbMergedPath)
+  }
+  if(verbose==TRUE){print("varDb.merged exported to external file.")}
+}
 
 
 res <- list()
-if(returnPileups==TRUE){res <- append(res,list(pileups=pileups, falsePileups=falsePileups))}
+if(returnMergedDb==TRUE & train!=TRUE){res <- append(res,list(varDb.merged=varDb.merged))}
+if(returnModel==TRUE & train==TRUE){res <- append(res,list(model=model))}
+if(returnPileups==TRUE){res <- append(res,list(pileups=pileups))}
+if(returnFalsePileups==TRUE & train==TRUE){res <- append(res,list(falsePileups=falsePileups))}
 if(returnPositionsAll==TRUE){res <- append(res, list(positionsAll=positionsAll))}
-if(returnPositionsAllFalse==TRUE){res <- append(res, list(positionsAllFalse=positionsAllFalse))} #TODO: tylko jak liczone
-#if(returnStats==TRUE){res <- append(res,list(stats=stats))}
-if(returnMergedDb==TRUE){res <- append(res,list(varDb.merged=varDb.merged))}
-if(returnSubsetDpDataTable==TRUE){res <- append(res,list(subsetDpDataTable=subsetDpDataTable))} #TODO: tylko jak liczone
+if(returnPositionsAllFalse==TRUE & train==TRUE){res <- append(res, list(positionsAllFalse=positionsAllFalse))}
+if(returnSubsetDpDataTable==TRUE & train==TRUE){res <- append(res,list(subsetDpDataTable=subsetDpDataTable))}
   
 return(res)
 
